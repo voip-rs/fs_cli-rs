@@ -70,7 +70,22 @@ What fs_cli does with no `-x`/`-X` depends on whether it has a terminal, because
 
 A job result prints as `[command] result` once it arrives. Log lines emitted while the batch runs land on the `--log-file` destination between commands.
 
-After the last command fs_cli waits for any outstanding job, forever unless `--job-timeout MS` says otherwise. A refused command or a failed job prints and exits 0, as `-x` has always done; a transport fault or an expired `--job-timeout` exits 1, the latter naming the jobs that never reported.
+After the last command fs_cli waits for any outstanding job, forever unless `--job-timeout MS` says otherwise; an expired timeout names the jobs that never reported.
+
+A refused command (`-ERR`, `-USAGE`) prints on stderr and the run carries on, exiting 0 as stock fs_cli does. With `--fail-on-error` (profile key `fail_on_error`), the first refused `-x` stops the run: no further command is sent, jobs already submitted are still awaited, and the exit status is 3. A refused job result counts too but does not stop the run.
+
+### Exit status
+
+| status | meaning |
+|---|---|
+| 0 | every command answered (refusals included, without `--fail-on-error`) |
+| 1 | any other failure: configuration, local I/O, a setup step the switch refused |
+| 2 | invalid arguments |
+| 3 | a command was refused, with `--fail-on-error` |
+| 254 | outcome unknown: a command was sent, then timed out or the connection was lost |
+| 255 | could not connect: unreachable, timed out, or credentials refused; nothing was sent |
+
+254 and 255 match stock fs_cli. When several apply, 254 wins over 3. The reply text stays on stdout whatever the status.
 
 `--log-file -` writes the log stream to stdout, honouring `--color`; a real file is never coloured. Both are command-line options with no profile key.
 
@@ -90,7 +105,8 @@ fs_cli --log-file - -l notice
 Search order: `~/.config/fs_cli.yaml`, `~/.fs_cli.yaml`,
 `/etc/freeswitch/fs_cli.yaml`, then the C fs_cli files `~/.fs_cli_conf` and
 `/etc/fs_cli.conf`. On first run with none of them present, `fs_cli` creates a
-default config at `~/.config/fs_cli.yaml`.
+default config at `~/.config/fs_cli.yaml`. A file named with `--config` is
+the only one tried, and a missing one is an error.
 
 A legacy file is read only when no YAML one exists, and carries just the keys a
 batch run needs — host, port, user, password, debug, loglevel, quiet,

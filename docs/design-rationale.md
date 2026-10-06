@@ -21,3 +21,9 @@ Reading a quote in a block value as a literal character is a choice rather than 
 ## Operator diagnostics do not go through the log
 
 Anything the operator must see reaches them through the printer, not the tracing subscriber. The subscriber's level follows the ESL debug setting, which is off by default, so a logged warning is invisible to exactly the operator who has not gone looking for one. In batch mode the split that matters for a pipe holds: results on stdout, diagnostics on stderr.
+
+## Batch exit status follows whether a command was sent
+
+The exit status of a batch run says whether anything may have reached the switch, not what kind of error ended it. A failure before the first command is handed to the library means nothing was applied; any failure after it means the outcome is unknown, because the library reports a lost connection the same way whether the command reached the wire or not. A disconnect failing after every command was answered never alters the status.
+
+A refused command exits as success unless the caller opts in, as stock fs_cli does. Opted in, a synchronous refusal stops further commands, since later ones may depend on it, but jobs already submitted are still awaited and reported, since they may have been applied. A refused job does not stop the run: it arrives asynchronously, so stopping on it would make which commands are sent depend on timing.
