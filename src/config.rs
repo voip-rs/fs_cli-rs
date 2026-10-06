@@ -239,16 +239,14 @@ fn is_legacy(path: &Path) -> bool {
 }
 
 impl FsCliConfig {
-    /// Load configuration from file or create default
+    /// Load the explicit file, else the first default present, else write and
+    /// use the default config. A missing explicit file is an error.
     pub fn load(config_path: Option<PathBuf>) -> Result<Self> {
-        let selected =
-            Self::select_config_path(config_path, Self::get_default_config_paths(), |path| {
-                path.exists()
-            });
-
-        match selected {
-            Some(path) if is_legacy(&path) => crate::legacy_config::read(&path),
-            Some(path) => Self::read_file(&path),
+        if let Some(path) = config_path {
+            return Self::read_any(&path);
+        }
+        match Self::select_config_path(Self::get_default_config_paths(), |path| path.exists()) {
+            Some(path) => Self::read_any(&path),
             None => {
                 let default_config = Self::default();
                 Self::write_default_config(&default_config);
@@ -257,18 +255,21 @@ impl FsCliConfig {
         }
     }
 
-    /// First candidate `exists` accepts, an explicit path being the only
-    /// candidate when one is given.
     fn select_config_path(
-        explicit: Option<PathBuf>,
         defaults: Vec<PathBuf>,
         exists: impl Fn(&Path) -> bool,
     ) -> Option<PathBuf> {
-        explicit
-            .map(|path| vec![path])
-            .unwrap_or(defaults)
+        defaults
             .into_iter()
             .find(|path| exists(path))
+    }
+
+    fn read_any(path: &Path) -> Result<Self> {
+        if is_legacy(path) {
+            crate::legacy_config::read(path)
+        } else {
+            Self::read_file(path)
+        }
     }
 
     fn read_file(path: &Path) -> Result<Self> {
@@ -371,30 +372,25 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_path_wins_over_every_default() {
-        let chosen = FsCliConfig::select_config_path(
-            Some(PathBuf::from("/srv/fs_cli.yaml")),
-            candidates(),
-            |_| true,
-        );
-        assert_eq!(chosen, Some(PathBuf::from("/srv/fs_cli.yaml")));
-    }
-
-    #[test]
-    fn a_missing_explicit_path_does_not_fall_back_to_a_default() {
-        let chosen = FsCliConfig::select_config_path(
-            Some(PathBuf::from("/srv/fs_cli.yaml")),
-            candidates(),
-            |path| path != Path::new("/srv/fs_cli.yaml"),
-        );
-        assert_eq!(chosen, None);
+    fn a_missing_explicit_path_is_an_error_naming_it() {
+        for name in ["no-such-fs_cli.yaml", "no-such-fs_cli.conf"] {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join(name);
+            let err = FsCliConfig::load(Some(path.clone())).unwrap_err();
+            assert!(format!("{:#}", err).contains(
+                &path
+                    .display()
+                    .to_string()
+            ));
+        }
     }
 
     #[test]
     fn the_defaults_are_tried_in_the_documented_order() {
         for first in 0..candidates().len() {
             let present = candidates().split_off(first);
-            let chosen = FsCliConfig::select_config_path(None, candidates(), |path| {
+            let chosen = FsCliConfig::select_config_path(candidates(), |path| {
                 present
                     .iter()
                     .any(|p| p == path)
@@ -406,7 +402,7 @@ mod tests {
     #[test]
     fn no_candidate_present_selects_nothing() {
         assert_eq!(
-            FsCliConfig::select_config_path(None, candidates(), |_| false),
+            FsCliConfig::select_config_path(candidates(), |_| false),
             None
         );
     }
