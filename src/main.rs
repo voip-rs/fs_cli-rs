@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use freeswitch_esl_tokio::EslClient;
 use std::io::IsTerminal;
+use std::process::ExitCode;
 use tracing::{debug, info};
 
 mod args;
@@ -24,14 +25,30 @@ mod readline;
 mod session;
 
 use args::Args;
+use batch::BatchError;
 use config::AppConfig;
-use connection::{connect_to_freeswitch_with_retry, print_connect_error};
+use connection::{connect_to_freeswitch_with_retry, is_unreachable, print_connect_error};
 use esl_debug::EslDebugLevel;
 use log_display::LogDestination;
 
+/// Stock fs_cli's codes: nothing was sent, or a command was sent and its
+/// outcome is unknown.
+const EXIT_NOT_CONNECTED: u8 = 255;
+const EXIT_OUTCOME_UNKNOWN: u8 = 254;
+
 #[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{:#}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 // qual:allow(iosp) reason: "entry point wiring the program together; splitting it would invent indirection"
-async fn main() -> Result<()> {
+async fn run() -> Result<ExitCode> {
     let config = Args::parse_and_merge()?;
 
     setup_logging(config.debug);
@@ -41,7 +58,7 @@ async fn main() -> Result<()> {
             "fs_cli: interactive mode needs a terminal on both stdin and stdout.\n\
              Give commands with -x/-X, or a log destination with --log-file PATH."
         );
-        std::process::exit(1);
+        return Ok(ExitCode::FAILURE);
     }
 
     // Opened before connecting so an unwritable path fails without a session.
@@ -58,7 +75,7 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             print_connect_error(&e, &config);
-            std::process::exit(1);
+            return Ok(ExitCode::from(EXIT_NOT_CONNECTED));
         }
     };
 
@@ -66,30 +83,48 @@ async fn main() -> Result<()> {
         .execute
         .is_empty()
     {
-        batch::run_batch(&client, events, &config, log_destination).await?;
-        disconnect(&client).await?;
+        if let Err(e) = batch::run_batch(&client, events, &config, log_destination).await {
+            eprintln!("{:#}", e.source);
+            return Ok(batch_exit_code(&e));
+        }
+        disconnect(&client).await;
     } else if terminal_available() {
         if let Err(e) =
             session::run_interactive_mode(client, events, &config, log_destination).await
         {
             eprintln!("{:#}", e);
+            // Returning would wait on the readline thread, blocked on stdin.
             std::process::exit(1);
         }
     } else {
         let destination = log_destination.context("interactive mode needs a terminal")?;
         batch::run_streaming(&client, events, &config, destination).await?;
-        disconnect(&client).await?;
+        disconnect(&client).await;
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-async fn disconnect(client: &EslClient) -> Result<()> {
+fn batch_exit_code(error: &BatchError) -> ExitCode {
+    if error.dispatched {
+        ExitCode::from(EXIT_OUTCOME_UNKNOWN)
+    } else if is_unreachable(&error.source) {
+        ExitCode::from(EXIT_NOT_CONNECTED)
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Every command was answered by now, so a failed goodbye is reported but
+/// does not fail the run.
+async fn disconnect(client: &EslClient) {
     info!("Disconnecting from FreeSWITCH...");
-    client
+    if let Err(e) = client
         .disconnect()
-        .await?;
-    Ok(())
+        .await
+    {
+        eprintln!("fs_cli: disconnecting from FreeSWITCH: {:#}", e);
+    }
 }
 
 /// rustyline needs a terminal on both streams before it will build its external

@@ -46,11 +46,11 @@ pub struct Args {
     pub originate_check: Option<OriginateCheck>,
 
     /// Execute commands and exit (can be used multiple times)
-    #[arg(short = 'x', action = clap::ArgAction::Append)]
+    #[arg(short = 'x', action = clap::ArgAction::Append, value_parser = single_line)]
     pub execute: Vec<String>,
 
     /// Execute commands as background jobs (bgapi), interleaved with -x
-    #[arg(short = 'X', action = clap::ArgAction::Append)]
+    #[arg(short = 'X', action = clap::ArgAction::Append, value_parser = single_line)]
     pub bg_execute: Vec<String>,
 
     /// Write the FreeSWITCH log stream to PATH ("-" for stdout)
@@ -210,6 +210,15 @@ impl Args {
     }
 }
 
+/// Refused here rather than by the library, which would fail it only after
+/// the batch counts a command as sent.
+fn single_line(command: &str) -> Result<String, String> {
+    if command.contains(['\n', '\r', '\0']) {
+        return Err("a command must not contain a line break or NUL".to_string());
+    }
+    Ok(command.to_string())
+}
+
 /// `-x` and `-X` in the order they were typed. The derived `Vec<String>` fields
 /// keep each flag's values apart, so only clap's indices restore the sequence.
 fn ordered_commands(matches: &ArgMatches) -> Vec<BatchCommand> {
@@ -260,6 +269,17 @@ mod tests {
             assert_eq!(args.color, Some(ColorMode::Never));
         }
         assert!(Args::try_parse_from(["fs_cli", "--color", "rainbow"]).is_err());
+    }
+
+    #[test]
+    fn a_command_spanning_lines_is_refused() {
+        use clap::Parser;
+        for flag in ["-x", "-X"] {
+            for command in ["status\nexit", "status\0"] {
+                assert!(Args::try_parse_from(["fs_cli", flag, command]).is_err());
+            }
+            assert!(Args::try_parse_from(["fs_cli", flag, "status"]).is_ok());
+        }
     }
 
     fn make_args_no_overrides() -> Args {

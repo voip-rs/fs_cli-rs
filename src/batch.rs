@@ -22,54 +22,27 @@ enum Drained {
     StreamEnded,
 }
 
+/// A failed batch run, and whether a command may have reached the switch.
+pub struct BatchError {
+    pub dispatched: bool,
+    pub source: anyhow::Error,
+}
+
 /// Run every `-x` / `-X` in the order given, then wait out the jobs.
 pub async fn run_batch(
     client: &EslClient,
     events: EslEventStream,
     config: &AppConfig,
     log: Option<LogDestination>,
-) -> Result<()> {
+) -> Result<(), BatchError> {
     let mut batch = Batch::new(client, events, config, log);
-    if config
-        .execute
-        .iter()
-        .any(|c| matches!(c, BatchCommand::BgApi(_)))
-    {
-        // BACKGROUND_JOB is a global-bus event: without this subscription no
-        // result arrives at all, and with it every client's results do.
-        client
-            .subscribe_events(EventFormat::Plain, &[EslEventType::BackgroundJob])
-            .await
-            .context("subscribing to BACKGROUND_JOB")?;
-    }
-    batch
-        .start_logging(config)
-        .await?;
-
-    for command in &config.execute {
-        match command {
-            BatchCommand::Api(cmd) => {
-                batch
-                    .run_api(cmd)
-                    .await?
-            }
-            BatchCommand::BgApi(cmd) => {
-                batch
-                    .submit_job(cmd)
-                    .await?
-            }
-        }
-        if let Drained::SinkClosed = batch
-            .drain_ready()
-            .await?
-        {
-            return Ok(());
-        }
-    }
-
-    batch
-        .wait_for_jobs(config.job_timeout)
-        .await
+    let result = batch
+        .run(config)
+        .await;
+    result.map_err(|source| BatchError {
+        dispatched: batch.dispatched,
+        source,
+    })
 }
 
 /// Write log lines until a signal arrives.
@@ -132,6 +105,8 @@ struct Batch<'a> {
     output: Output,
     log: Option<LogDestination>,
     jobs: BgJobTracker<String>,
+    /// Set before the first user command is handed to the library.
+    dispatched: bool,
 }
 
 impl<'a> Batch<'a> {
@@ -149,7 +124,47 @@ impl<'a> Batch<'a> {
             output,
             log,
             jobs: BgJobTracker::new(),
+            dispatched: false,
         }
+    }
+
+    async fn run(&mut self, config: &AppConfig) -> Result<()> {
+        if config
+            .execute
+            .iter()
+            .any(|c| matches!(c, BatchCommand::BgApi(_)))
+        {
+            // BACKGROUND_JOB is a global-bus event: without this subscription no
+            // result arrives at all, and with it every client's results do.
+            self.client
+                .subscribe_events(EventFormat::Plain, &[EslEventType::BackgroundJob])
+                .await
+                .context("subscribing to BACKGROUND_JOB")?;
+        }
+        self.start_logging(config)
+            .await?;
+
+        for command in &config.execute {
+            match command {
+                BatchCommand::Api(cmd) => {
+                    self.run_api(cmd)
+                        .await?
+                }
+                BatchCommand::BgApi(cmd) => {
+                    self.submit_job(cmd)
+                        .await?
+                }
+            }
+            if let Drained::SinkClosed = self
+                .drain_ready()
+                .await?
+            {
+                return Ok(());
+            }
+        }
+
+        self.wait_for_jobs(config.job_timeout)
+            .await
     }
 
     /// The log stream is what `--log-file` asks for, so a switch that refuses
@@ -167,6 +182,7 @@ impl<'a> Batch<'a> {
     }
 
     async fn run_api(&mut self, command: &str) -> Result<()> {
+        self.dispatched = true;
         self.processor
             .execute_command(self.client, command)
             .await
@@ -177,6 +193,7 @@ impl<'a> Batch<'a> {
             .processor
             .checked_originate(command);
         let command = sent.as_str();
+        self.dispatched = true;
         match self
             .jobs
             .bgapi(self.client, command, command.to_string())

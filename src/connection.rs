@@ -86,6 +86,14 @@ pub(crate) fn is_connection_error(error: &anyhow::Error) -> bool {
         .is_some_and(|e| e.is_connection_error())
 }
 
+/// A lost connection or an unanswered request: the switch was not reachable.
+pub(crate) fn is_unreachable(error: &anyhow::Error) -> bool {
+    // qual:allow(coupling, deh) reason: "classifying EslError is what this asks"
+    error
+        .downcast_ref::<EslError>()
+        .is_some_and(|e| e.is_connection_error() || matches!(e, EslError::Timeout { .. }))
+}
+
 /// Check if error is an ESL permission denial (e.g. an event the user is not
 /// allowed to subscribe to). Used to gate the idle-liveness timer: a restricted
 /// user who can't subscribe to HEARTBEAT has no idle traffic source.

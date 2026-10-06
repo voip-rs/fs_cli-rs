@@ -27,12 +27,31 @@ enum JobReply {
     Silent,
 }
 
+/// What the fake server answers an `api` command with.
+#[derive(Clone)]
+enum ApiReply {
+    /// `fake reply to <command>`.
+    Echo,
+    /// Read the command and never answer.
+    Silent,
+}
+
+impl ApiReply {
+    fn body(&self, command: &str) -> Option<String> {
+        match self {
+            Self::Echo => Some(format!("fake reply to {}\n", command)),
+            Self::Silent => None,
+        }
+    }
+}
+
 /// How the fake server treats each connection it accepts.
 #[derive(Clone)]
 struct Script {
     password: String,
     /// Close the socket once this many post-auth commands have arrived.
     close_after_commands: Option<usize>,
+    api_reply: ApiReply,
     job_reply: JobReply,
     /// Pushed as a log/data event once the client sends `log <level>`.
     log_line: Option<String>,
@@ -43,6 +62,7 @@ impl Default for Script {
         Self {
             password: PASSWORD.to_string(),
             close_after_commands: None,
+            api_reply: ApiReply::Echo,
             job_reply: JobReply::Matching,
             log_line: None,
         }
@@ -170,17 +190,21 @@ async fn serve(socket: TcpStream, script: Script, seen: Seen, index: usize) -> s
             .push(command.clone());
 
         if let Some(word) = command.strip_prefix("api ") {
-            let body = format!("fake reply to {}\n", word);
-            writer
-                .write_all(
-                    format!(
-                        "Content-Type: api/response\nContent-Length: {}\n\n{}",
-                        body.len(),
-                        body
+            if let Some(body) = script
+                .api_reply
+                .body(word)
+            {
+                writer
+                    .write_all(
+                        format!(
+                            "Content-Type: api/response\nContent-Length: {}\n\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
                     )
-                    .as_bytes(),
-                )
-                .await?;
+                    .await?;
+            }
         } else if let Some(word) = command.strip_prefix("bgapi ") {
             let job_uuid = format!("job-{}-{}", index, count);
             writer
@@ -470,11 +494,12 @@ async fn auth_failure_is_reported_as_such() {
     .await
     .expect("join fs_cli");
 
-    assert!(
-        !output
+    assert_eq!(
+        output
             .status
-            .success(),
-        "a refused password must not exit zero"
+            .code(),
+        Some(255),
+        "a refused password means nothing was sent"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -709,11 +734,12 @@ async fn an_expired_job_timeout_names_the_outstanding_job() {
     )
     .await;
 
-    assert!(
-        !output
+    assert_eq!(
+        output
             .status
-            .success(),
-        "an expired job timeout is the one new non-zero exit"
+            .code(),
+        Some(254),
+        "a submitted job that never reported has an unknown outcome"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -721,6 +747,88 @@ async fn an_expired_job_timeout_names_the_outstanding_job() {
         "the failure must name the job that never reported: {:?}",
         stderr
     );
+}
+
+#[tokio::test]
+async fn an_unreachable_switch_exits_255() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a port to free");
+    let addr = listener
+        .local_addr()
+        .expect("freed port addr");
+    drop(listener);
+    let dir = scratch_dir("unreachable");
+
+    let output = run_cli(
+        dir,
+        addr,
+        ["-x", "status"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(255),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_command_exits_254() {
+    let server = FakeEsl::start(Script {
+        api_reply: ApiReply::Silent,
+        ..Script::default()
+    })
+    .await;
+    let dir = scratch_dir("api-silent");
+
+    let output = run_cli(
+        dir,
+        server.addr,
+        ["-T", "300", "-x", "reloadxml"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(254),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.commands(0), vec!["api reloadxml".to_string()]);
+}
+
+#[tokio::test]
+async fn a_command_spanning_lines_is_refused_before_connecting() {
+    let server = FakeEsl::start(Script::default()).await;
+    let dir = scratch_dir("multiline");
+
+    let output = run_cli(
+        dir,
+        server.addr,
+        ["-x", "status\nexit"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(server.connection_count(), 0);
 }
 
 #[tokio::test]
