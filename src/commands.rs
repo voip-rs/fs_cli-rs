@@ -42,6 +42,14 @@ fn frame_failure<'a>(failure: &CommandFailure<'a>) -> Option<(&'static str, &'a 
     }
 }
 
+/// How the switch answered a command that reached it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Accepted,
+    /// Refused with `-ERR` or `-USAGE`, already printed.
+    Refused,
+}
+
 /// Command processor for FreeSWITCH CLI commands
 pub struct CommandProcessor {
     output: Output,
@@ -82,17 +90,25 @@ impl CommandProcessor {
     }
 
     /// Execute a FreeSWITCH command
-    pub async fn execute_command(&self, client: &EslClient, command: &str) -> Result<()> {
+    pub async fn execute_command(&self, client: &EslClient, command: &str) -> Result<Answer> {
         trace!("execute_command called with: '{}'", command);
         let sent = self.checked_originate(command);
         let command = sent.as_str();
 
-        if let Some(result) = self
+        match self
             .handle_special_command(client, command)
-            .await?
+            .await
         {
-            self.print_message(&result);
-            return Ok(());
+            Ok(Some(result)) => {
+                self.print_message(&result);
+                return Ok(Answer::Accepted);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return self
+                    .report_refusal(e, None)
+                    .map(|()| Answer::Refused)
+            }
         }
 
         match self
@@ -106,11 +122,12 @@ impl CommandProcessor {
                 {
                     self.print_message(&body);
                 }
+                Ok(Answer::Accepted)
             }
-            Err(e) => return self.report_refusal(e),
+            Err(e) => self
+                .report_refusal(e, None)
+                .map(|()| Answer::Refused),
         }
-
-        Ok(())
     }
 
     /// The line to send for `command`, having said what the switch will install for an
@@ -126,18 +143,22 @@ impl CommandProcessor {
             .unwrap_or_else(|| command.to_string())
     }
 
-    /// Print a refused command and survive it; a transport fault propagates, so
-    /// a batch run still exits non-zero on one.
+    /// Print a refused command, prefixed `[context]` when given, and return Ok;
+    /// any other error is handed back untouched.
     // qual:allow(coupling, deh) reason: "this match turns a refused command into user-facing text; handling the error here is the point"
-    pub fn report_refusal(&self, error: Error) -> Result<()> {
+    pub fn report_refusal(&self, error: Error, context: Option<&str>) -> Result<()> {
         match error
             .downcast_ref::<EslError>()
             .and_then(EslError::command_failure)
             .and_then(|f| frame_failure(&f))
         {
             Some((label, text)) => {
+                let message = match context {
+                    Some(context) => format!("[{}] {}", context, text),
+                    None => text.to_string(),
+                };
                 self.output
-                    .print_labeled(label, text);
+                    .print_labeled(label, &message);
                 Ok(())
             }
             None => Err(error),

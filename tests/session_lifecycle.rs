@@ -727,3 +727,144 @@ async fn batch_commands_reach_the_wire_in_the_typed_order() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_refused_command_exits_zero_by_default() {
+    let server = switch().await;
+    let dir = scratch_dir("refused-default");
+
+    let run = spawn_batch(&dir, server.addr(), &["-x", "bogus", "-x", "status"]);
+    let mut conn = accept(&server).await;
+    expect_next(&mut conn, "api bogus").await;
+    conn.reply_api("-ERR bogus Command not found!\n")
+        .await
+        .expect("refuse command");
+    let rest = serve(conn, None).await;
+    let output = finish(run).await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(0)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("API Error: bogus Command not found!"));
+    assert_eq!(rest, vec!["api status".to_string()]);
+}
+
+#[tokio::test]
+async fn fail_on_error_stops_at_a_refusal_but_awaits_submitted_jobs() {
+    let server = switch().await;
+    let dir = scratch_dir("refused-fail");
+
+    let run = spawn_batch(
+        &dir,
+        server.addr(),
+        &[
+            "--fail-on-error",
+            "-X",
+            "version",
+            "-x",
+            "bogus",
+            "-x",
+            "status",
+        ],
+    );
+    let mut conn = accept(&server).await;
+    expect_next(&mut conn, "event plain").await;
+    conn.reply_ok()
+        .await
+        .expect("answer subscription");
+    expect_next(&mut conn, "bgapi version").await;
+    conn.reply_bgapi("job-late")
+        .await
+        .expect("accept job");
+    expect_next(&mut conn, "api bogus").await;
+    conn.reply_api("-USAGE: bogus <arg>\n")
+        .await
+        .expect("refuse command");
+    conn.send_background_job(&background_job("job-late", "version"), "+OK late\n")
+        .await
+        .expect("complete job");
+    let rest = serve(conn, None).await;
+    let output = finish(run).await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        rest.is_empty(),
+        "nothing is sent after the refusal: {:?}",
+        rest
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: bogus <arg>"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("[version] late"));
+}
+
+#[tokio::test]
+async fn the_profile_key_alone_enables_fail_on_error() {
+    let server = switch().await;
+    let dir = scratch_dir("refused-profile");
+
+    let mut command = cli(&dir, server.addr());
+    let mut config = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("fs_cli.yaml"))
+        .expect("open test config");
+    std::io::Write::write_all(&mut config, b"    fail_on_error: true\n").expect("append key");
+    command.args(["-x", "bogus"]);
+    let run = spawn_cli(command);
+    let mut conn = accept(&server).await;
+    expect_next(&mut conn, "api bogus").await;
+    conn.reply_api("-ERR no\n")
+        .await
+        .expect("refuse command");
+    serve(conn, None).await;
+    let output = finish(run).await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(3)
+    );
+}
+
+#[tokio::test]
+async fn a_refused_job_counts_and_names_the_job() {
+    let server = switch().await;
+    let dir = scratch_dir("refused-job");
+
+    let run = spawn_batch(&dir, server.addr(), &["--fail-on-error", "-X", "version"]);
+    let mut conn = accept(&server).await;
+    expect_next(&mut conn, "event plain").await;
+    conn.reply_ok()
+        .await
+        .expect("answer subscription");
+    expect_next(&mut conn, "bgapi version").await;
+    conn.reply_bgapi("job-refused")
+        .await
+        .expect("accept job");
+    conn.send_background_job(&background_job("job-refused", "version"), "-ERR no way\n")
+        .await
+        .expect("refuse job");
+    serve(conn, None).await;
+    let output = finish(run).await;
+
+    assert_eq!(
+        output
+            .status
+            .code(),
+        Some(3)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("API Error: [version] no way"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

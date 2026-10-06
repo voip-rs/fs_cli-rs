@@ -67,6 +67,9 @@ pub struct ProfileConfig {
 
     /// What to do about an originate the switch may read differently
     pub originate_check: OriginateCheck,
+
+    /// Batch: stop and exit non-zero on a refused command
+    pub fail_on_error: bool,
 }
 
 impl Default for ProfileConfig {
@@ -88,6 +91,7 @@ impl Default for ProfileConfig {
             macros: crate::readline::get_default_fnkeys(),
             max_auto_complete_uuid: 32,
             originate_check: OriginateCheck::Warn,
+            fail_on_error: false,
         }
     }
 }
@@ -113,6 +117,7 @@ struct ProfileOverrides {
     macros: Option<HashMap<String, String>>,
     max_auto_complete_uuid: Option<u32>,
     originate_check: Option<OriginateCheck>,
+    fail_on_error: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for ProfileConfig {
@@ -164,6 +169,9 @@ impl<'de> Deserialize<'de> for ProfileConfig {
             originate_check: set
                 .originate_check
                 .unwrap_or(base.originate_check),
+            fail_on_error: set
+                .fail_on_error
+                .unwrap_or(base.fail_on_error),
         })
     }
 }
@@ -191,6 +199,7 @@ impl ProfileConfig {
             job_timeout: None,
             max_auto_complete_uuid: self.max_auto_complete_uuid,
             originate_check: self.originate_check,
+            fail_on_error: self.fail_on_error,
         }
     }
 }
@@ -226,6 +235,7 @@ pub struct AppConfig {
     pub job_timeout: Option<u64>,
     pub max_auto_complete_uuid: u32,
     pub originate_check: OriginateCheck,
+    pub fail_on_error: bool,
 }
 
 /// The two names C fs_cli reads. Anything else is parsed as YAML, so an

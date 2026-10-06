@@ -394,6 +394,7 @@ async fn handle_command_line(
         }
         Err(ParseError::NotClientCommand) => {
             let effective = parse_function_key(&command, parts.macros).unwrap_or(command);
+            // A refusal is already printed; the session carries on either way.
             if let Err(e) = parts
                 .processor
                 .execute_command(client, &effective)

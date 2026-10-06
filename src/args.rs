@@ -45,6 +45,10 @@ pub struct Args {
     #[arg(long, ignore_case = true)]
     pub originate_check: Option<OriginateCheck>,
 
+    /// With -x/-X: stop at a refused command and exit 3
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
+    pub fail_on_error: Option<bool>,
+
     /// Execute commands and exit (can be used multiple times)
     #[arg(short = 'x', action = clap::ArgAction::Append, value_parser = single_line)]
     pub execute: Vec<String>,
@@ -179,6 +183,9 @@ impl Args {
         if let Some(originate_check) = self.originate_check {
             config.originate_check = originate_check;
         }
+        if let Some(fail_on_error) = self.fail_on_error {
+            config.fail_on_error = fail_on_error;
+        }
         if let Some(log_file) = &self.log_file {
             config.log_file = Some(log_file.clone());
         }
@@ -292,6 +299,7 @@ mod tests {
             debug: None,
             color: None,
             originate_check: None,
+            fail_on_error: None,
             execute: Vec::new(),
             bg_execute: Vec::new(),
             log_file: None,
@@ -329,6 +337,7 @@ mod tests {
             execute: Vec::new(),
             max_auto_complete_uuid: 32,
             originate_check: OriginateCheck::Warn,
+            fail_on_error: false,
         }
     }
 

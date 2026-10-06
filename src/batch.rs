@@ -1,6 +1,6 @@
 //! Non-interactive modes: the ordered `-x`/`-X` batch and the log stream.
 
-use crate::commands::CommandProcessor;
+use crate::commands::{Answer, CommandProcessor};
 use crate::config::{AppConfig, BatchCommand};
 use crate::connection::enable_logging;
 use crate::log_display::{is_log_event, LogDestination};
@@ -29,20 +29,25 @@ pub struct BatchError {
 }
 
 /// Run every `-x` / `-X` in the order given, then wait out the jobs.
+/// `Refused` when any command or job was refused.
 pub async fn run_batch(
     client: &EslClient,
     events: EslEventStream,
     config: &AppConfig,
     log: Option<LogDestination>,
-) -> Result<(), BatchError> {
+) -> Result<Answer, BatchError> {
     let mut batch = Batch::new(client, events, config, log);
     let result = batch
         .run(config)
         .await;
-    result.map_err(|source| BatchError {
-        dispatched: batch.dispatched,
-        source,
-    })
+    match result {
+        Ok(()) if batch.refused => Ok(Answer::Refused),
+        Ok(()) => Ok(Answer::Accepted),
+        Err(source) => Err(BatchError {
+            dispatched: batch.dispatched,
+            source,
+        }),
+    }
 }
 
 /// Write log lines until a signal arrives.
@@ -107,6 +112,7 @@ struct Batch<'a> {
     jobs: BgJobTracker<String>,
     /// Set before the first user command is handed to the library.
     dispatched: bool,
+    refused: bool,
 }
 
 impl<'a> Batch<'a> {
@@ -125,6 +131,7 @@ impl<'a> Batch<'a> {
             log,
             jobs: BgJobTracker::new(),
             dispatched: false,
+            refused: false,
         }
     }
 
@@ -145,7 +152,7 @@ impl<'a> Batch<'a> {
             .await?;
 
         for command in &config.execute {
-            match command {
+            let answer = match command {
                 BatchCommand::Api(cmd) => {
                     self.run_api(cmd)
                         .await?
@@ -153,6 +160,12 @@ impl<'a> Batch<'a> {
                 BatchCommand::BgApi(cmd) => {
                     self.submit_job(cmd)
                         .await?
+                }
+            };
+            if answer == Answer::Refused {
+                self.refused = true;
+                if config.fail_on_error {
+                    break;
                 }
             }
             if let Drained::SinkClosed = self
@@ -181,14 +194,14 @@ impl<'a> Batch<'a> {
             .context("enabling the log stream")
     }
 
-    async fn run_api(&mut self, command: &str) -> Result<()> {
+    async fn run_api(&mut self, command: &str) -> Result<Answer> {
         self.dispatched = true;
         self.processor
             .execute_command(self.client, command)
             .await
     }
 
-    async fn submit_job(&mut self, command: &str) -> Result<()> {
+    async fn submit_job(&mut self, command: &str) -> Result<Answer> {
         let sent = self
             .processor
             .checked_originate(command);
@@ -201,13 +214,14 @@ impl<'a> Batch<'a> {
         {
             Ok(uuid) => {
                 debug!("bgapi {} submitted as job {}", command, uuid);
-                Ok(())
+                Ok(Answer::Accepted)
             }
             // Context goes on afterwards: the refusal is classified from the
             // bare EslError.
             Err(e) => self
                 .processor
-                .report_refusal(anyhow::Error::new(e))
+                .report_refusal(anyhow::Error::new(e), None)
+                .map(|()| Answer::Refused)
                 .with_context(|| format!("bgapi {}", command)),
         }
     }
@@ -221,9 +235,15 @@ impl<'a> Batch<'a> {
                 Ok(body) => self
                     .output
                     .print(format!("[{}] {}", command, body.trim())),
-                Err(e) => self
+                Err(e) => match self
                     .processor
-                    .handle_error(anyhow::Error::new(e).context(format!("bgapi {}", command))),
+                    .report_refusal(anyhow::Error::new(e), Some(&command))
+                {
+                    Ok(()) => self.refused = true,
+                    Err(e) => self
+                        .processor
+                        .handle_error(e.context(format!("bgapi {}", command))),
+                },
             }
             return;
         }

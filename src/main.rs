@@ -26,6 +26,7 @@ mod session;
 
 use args::Args;
 use batch::BatchError;
+use commands::Answer;
 use config::AppConfig;
 use connection::{connect_to_freeswitch_with_retry, is_unreachable, print_connect_error};
 use esl_debug::EslDebugLevel;
@@ -35,6 +36,7 @@ use log_display::LogDestination;
 /// outcome is unknown.
 const EXIT_NOT_CONNECTED: u8 = 255;
 const EXIT_OUTCOME_UNKNOWN: u8 = 254;
+const EXIT_REFUSED: u8 = 3;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -83,11 +85,17 @@ async fn run() -> Result<ExitCode> {
         .execute
         .is_empty()
     {
-        if let Err(e) = batch::run_batch(&client, events, &config, log_destination).await {
-            eprintln!("{:#}", e.source);
-            return Ok(batch_exit_code(&e));
-        }
+        let answer = match batch::run_batch(&client, events, &config, log_destination).await {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("{:#}", e.source);
+                return Ok(batch_exit_code(&e));
+            }
+        };
         disconnect(&client).await;
+        if config.fail_on_error && answer == Answer::Refused {
+            return Ok(ExitCode::from(EXIT_REFUSED));
+        }
     } else if terminal_available() {
         if let Err(e) =
             session::run_interactive_mode(client, events, &config, log_destination).await
