@@ -1,7 +1,7 @@
 # fs_cli-rs
 
 Interactive FreeSWITCH CLI client written in Rust using
-[freeswitch-esl-tokio](https://github.com/ticpu/freeswitch-esl-tokio).
+[freeswitch-esl-tokio](https://github.com/voip-rs/freeswitch-esl-tokio).
 
 ## Features
 
@@ -21,10 +21,10 @@ overridden explicitly (`-r false`) instead of only ever being turned on.
 ## Installation
 
 Pre-built binaries for Linux AMD64/ARM64 and Windows are available on the
-[releases page](https://github.com/ticpu/fs_cli-rs/releases). From v1.4.3 they
+[releases page](https://github.com/voip-rs/fs_cli-rs/releases). From v1.4.3 they
 are built on Debian Bullseye and need glibc 2.30 or newer; on Debian Buster and
 other glibc 2.28 hosts, use
-[v1.4.2](https://github.com/ticpu/fs_cli-rs/releases/tag/v1.4.2) or build from
+[v1.4.2](https://github.com/voip-rs/fs_cli-rs/releases/tag/v1.4.2) or build from
 source.
 
 To build from source:
