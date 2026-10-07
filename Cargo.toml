@@ -1,6 +1,6 @@
 [package]
 name = "fs_cli-rs"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
 description = "Interactive FreeSWITCH CLI client using ESL"
