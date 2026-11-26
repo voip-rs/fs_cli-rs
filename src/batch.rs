@@ -68,7 +68,7 @@ pub async fn run_streaming(
             received = batch.events.recv() => {
                 match received {
                     Some(Ok(event)) => batch.handle_event(&event),
-                    Some(Err(e @ EslError::UnsolicitedReply { .. })) => {
+                    Some(Err(e @ (EslError::UnsolicitedReply { .. } | EslError::LateReply { .. }))) => {
                         warn!("event stream: {}", e.display_chain());
                     }
                     Some(Err(e)) => return Err(anyhow::Error::new(e).context("event stream")),

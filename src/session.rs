@@ -4,8 +4,7 @@
 //!
 //! A typed line goes to the switch as bgapi, not api. mod_event_socket runs an
 //! api inline on the listener thread, so one slow command holds the socket and
-//! every line typed after it; and once the client stops waiting, the library
-//! discards the late reply to keep replies paired with commands. A bgapi is
+//! every line typed after it, each timing out in turn. A bgapi is
 //! acknowledged at once and answers with a BACKGROUND_JOB event, so a slow
 //! command becomes a warning and its result still prints when it arrives.
 //! Jobs run in parallel switch threads, so their effects can land in any order;
@@ -15,7 +14,8 @@
 //! BACKGROUND_JOB is subscribed with an `event` line of its own: the switch
 //! refuses a whole line when one event in it is denied, and HEARTBEAT, which
 //! arms the liveness timer, must not be lost with it. A user denied
-//! BACKGROUND_JOB gets api, with its old timeout, on that connection.
+//! BACKGROUND_JOB gets api on that connection: a command past -t times out,
+//! and its reply, if it comes, prints labelled with the timeout's ticket.
 // qual:allow(srp, file_length=370) reason: "one session lifecycle, well under the project's 2000-line cap"
 
 use crate::channel_info::ChannelProvider;
@@ -39,8 +39,8 @@ use crossterm::{
     ExecutableCommand,
 };
 use freeswitch_esl_tokio::{
-    ConnectionStatus, DisconnectReason, EslClient, EslEvent, EslEventStream, EslEventType,
-    EventFormat,
+    ConnectionStatus, DisconnectReason, EslClient, EslError, EslEvent, EslEventStream,
+    EslEventType, EslResponse, EventFormat,
 };
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
@@ -328,6 +328,15 @@ async fn setup_subscriptions(
     choose_command_mode(client, output).await
 }
 
+/// What a late reply said: an api body, or a command reply's text.
+fn late_reply_text(response: &EslResponse) -> &str {
+    response
+        .body()
+        .or_else(|| response.reply_text())
+        .unwrap_or("")
+        .trim_end()
+}
+
 /// Spawn a task that consumes events and displays log/channel messages
 fn spawn_event_consumer(
     mut events: EslEventStream,
@@ -366,6 +375,13 @@ fn spawn_event_consumer(
                             destination.write_event(&event);
                         }
                     }
+                }
+                Err(EslError::LateReply { response, ticket }) => {
+                    output.print(format!(
+                        "[late reply to command {}] {}",
+                        ticket,
+                        late_reply_text(&response)
+                    ));
                 }
                 Err(e) => {
                     warn!("Event stream error: {}", e.display_chain());

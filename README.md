@@ -61,7 +61,7 @@ A line typed at the prompt goes to the switch as `bgapi`, so a slow command neve
 
 Jobs run in parallel on the switch, so two commands typed back to back can take effect in either order. `--command-order serial` (profile key `command_order`) keeps the order typed: a line waits in fs_cli until every job before it has answered, and `/jobs` lists it as queued. A job in flight when the connection drops is reported as having an unknown outcome, and a line still queued as not sent.
 
-An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command slower than `-t` times out and its reply is not shown.
+An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command slower than `-t` times out (`command #3 timed out after 2000ms`) and its reply, if it comes, prints as `[late reply to command #3] ...`.
 
 ## Non-interactive modes
 

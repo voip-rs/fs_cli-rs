@@ -1026,15 +1026,24 @@ async fn a_denied_background_job_subscription_falls_back_to_api() {
 
     type_line(&pty, "slow");
     assert_eq!(expect_next(&mut conn, "api").await, "api slow");
-    // The old behaviour, kept on an api connection: no reply within -t is a
-    // timeout, and the reply that does come is never shown.
-    let screen = screen_showing(&pty, "timed out").await;
-    assert!(screen.contains("timed out"), "{:?}", screen);
+    // On an api connection no reply within -t is still a timeout, but the
+    // reply that does come prints under the timeout's ticket.
+    let screen = screen_showing(&pty, " timed out after 300ms").await;
+    let ticket = screen
+        .split(" timed out after 300ms")
+        .next()
+        .and_then(|head| {
+            head.rsplit("command ")
+                .next()
+        })
+        .unwrap_or_else(|| panic!("no timeout ticket on screen: {:?}", screen))
+        .to_string();
     conn.reply_api("+OK slow done\n")
         .await
         .expect("late api reply");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(!screen_now(&pty).contains("slow done"));
+    let late = format!("[late reply to command {}] +OK slow done", ticket);
+    let screen = screen_showing(&pty, &late).await;
+    assert!(screen.contains(&late), "{:?}", screen);
     kill(child);
 }
 
