@@ -124,11 +124,9 @@ pub fn format_channel_event(event: &EslEvent, output: &Output) -> Option<String>
         .unwrap_or("?");
 
     let line = if event_type == EslEventType::ChannelHangup {
-        let cause = match event.hangup_cause() {
-            Ok(Some(c)) => c.to_string(),
-            Ok(None) => "unknown".to_string(),
-            Err(e) => format!("{:#}", anyhow::Error::new(e)),
-        };
+        let cause = event
+            .hangup_cause()
+            .map_or_else(|| "unknown".to_string(), |c| c.to_string());
         format!("[{}] {} {} ({})", label, uuid, channel, cause)
     } else {
         let caller_id = format_caller_id(

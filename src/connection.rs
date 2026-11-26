@@ -219,9 +219,6 @@ mod tests {
         let err: anyhow::Error = EslError::Io(io_err).into();
         assert!(is_connection_error(&err));
 
-        let err: anyhow::Error = EslError::CommandTimeout { timeout_ms: 1000 }.into();
-        assert!(!is_connection_error(&err));
-
         let err: anyhow::Error = EslError::auth_failed("bad password").into();
         assert!(!is_connection_error(&err));
     }
@@ -252,9 +249,6 @@ mod tests {
 
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
         let err: anyhow::Error = EslError::Io(io_err).into();
-        assert!(!is_refused(&err));
-
-        let err: anyhow::Error = EslError::CommandTimeout { timeout_ms: 1000 }.into();
         assert!(!is_refused(&err));
     }
 
