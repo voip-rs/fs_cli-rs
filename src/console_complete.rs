@@ -60,12 +60,12 @@ pub async fn get_console_complete(
                 parsed
             }
             Err(e) => {
-                trace!("No completions for '{}': {}", cmd, e);
+                trace!("No completions for '{}': {}", cmd, e.display_chain());
                 Vec::new()
             }
         },
         Err(e) => {
-            tracing::debug!("Failed to get console completions: {}", e);
+            tracing::debug!("Failed to get console completions: {}", e.display_chain());
             Vec::new()
         }
     }

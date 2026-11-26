@@ -127,7 +127,7 @@ pub fn format_channel_event(event: &EslEvent, output: &Output) -> Option<String>
         let cause = match event.hangup_cause() {
             Ok(Some(c)) => c.to_string(),
             Ok(None) => "unknown".to_string(),
-            Err(e) => e.to_string(),
+            Err(e) => format!("{:#}", anyhow::Error::new(e)),
         };
         format!("[{}] {} {} ({})", label, uuid, channel, cause)
     } else {

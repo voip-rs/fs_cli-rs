@@ -284,7 +284,7 @@ fn spawn_event_consumer(
                     }
                 }
                 Err(e) => {
-                    warn!("Event stream error: {}", e);
+                    warn!("Event stream error: {}", e.display_chain());
                 }
             }
         }

@@ -5,11 +5,15 @@
 //! names the values the channel receives.
 
 use freeswitch_esl_tokio::commands::{
-    originate_split, DialStringCarrier, DialStringTarget, FlattenedDialString, OriginateError,
-    Variables, VariablesType,
+    originate_split, BlockParse, DialStringCarrier, DialStringTarget, FlattenedDialString,
+    OriginateError, Variables, VariablesType,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Range;
+
+/// The switch's block-parser revision the check reads and renders for; the only one
+/// freeswitch-types knows, and every vouched release runs it.
+const BLOCK_PARSE: BlockParse = BlockParse::PairSplitCleans;
 
 /// What fs_cli does about an `originate` whose dial string the switch may read differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::Display, clap::ValueEnum)]
@@ -137,13 +141,13 @@ fn rewrite_block(block: &str, target: DialStringTarget) -> Result<String, String
         let (key, value) = pair
             .split_once('=')
             .ok_or("a pair carries no =")?;
-        variables.insert(key, value);
+        variables
+            .insert(key, value)
+            .map_err(|e| format!("the switch would not deliver {key}: {e}"))?;
         intended.push((key.to_string(), value.to_string()));
     }
 
-    let rendered = variables
-        .display_for(target)
-        .to_string();
+    let rendered = variables.render(target);
     let read_back = Variables::parse_for(&rendered, target)
         .map_err(|e| format!("the rewrite reads back as {e}"))?;
     let delivered: Vec<(String, String)> = read_back
@@ -264,7 +268,7 @@ fn separator_len(arguments: &str) -> usize {
 
 /// A line opening `^^` names the separator its arguments split on.
 fn target_for(arguments: &str) -> DialStringTarget {
-    let base = DialStringTarget::new(DialStringCarrier::EslApi);
+    let base = DialStringTarget::new(DialStringCarrier::EslApi, BLOCK_PARSE);
     arguments
         .strip_prefix("^^")
         .and_then(|rest| {
@@ -396,7 +400,7 @@ mod tests {
             .remove(0);
         let variables = Variables::parse_for(
             &dial[..head_block_end(&dial).unwrap()],
-            DialStringCarrier::EslApi,
+            DialStringTarget::new(DialStringCarrier::EslApi, BLOCK_PARSE),
         )
         .unwrap();
         assert_eq!(variables.get("cid_name"), Some("O'Brien"));
@@ -413,7 +417,7 @@ mod tests {
             .remove(0);
         let variables = Variables::parse_for(
             &dial[..head_block_end(&dial).unwrap()],
-            DialStringCarrier::EslApi,
+            DialStringTarget::new(DialStringCarrier::EslApi, BLOCK_PARSE),
         )
         .unwrap();
         assert_eq!(variables.get("p1"), Some("O'Brien"));

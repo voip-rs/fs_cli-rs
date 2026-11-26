@@ -7,10 +7,10 @@ use crate::log_display::{is_log_event, LogDestination};
 use crate::printer::Output;
 use anyhow::{anyhow, Context, Result};
 use freeswitch_esl_tokio::{
-    BgJobTracker, EslClient, EslEvent, EslEventStream, EslEventType, EventFormat,
+    BgJobTracker, EslClient, EslError, EslEvent, EslEventStream, EslEventType, EventFormat,
 };
 use tokio::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Why a drain stopped.
 enum Drained {
@@ -67,6 +67,9 @@ pub async fn run_streaming(
             received = batch.events.recv() => {
                 match received {
                     Some(Ok(event)) => batch.handle_event(&event),
+                    Some(Err(e @ EslError::UnsolicitedReply { .. })) => {
+                        warn!("event stream: {}", e.display_chain());
+                    }
                     Some(Err(e)) => return Err(anyhow::Error::new(e).context("event stream")),
                     None => return Err(anyhow!("FreeSWITCH closed the event stream")),
                 }

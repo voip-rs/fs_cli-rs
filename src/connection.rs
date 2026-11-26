@@ -20,7 +20,7 @@ pub(crate) async fn connect_to_freeswitch(
     let auth = match &config.user {
         Some(user) => {
             info!("Using user authentication: {}", user);
-            AuthMethod::user(user, &config.password)
+            AuthMethod::user(user, &config.password)?
         }
         None => {
             info!("Using password authentication");
@@ -69,12 +69,16 @@ pub(crate) async fn connect_to_freeswitch_with_retry(
     connect_retrying(config).await
 }
 
-/// Auth rejection and ACL denial are configuration faults; retrying repeats them.
+/// Auth rejection and ACL denial, and a user the switch would misread, are configuration faults; retrying repeats them.
 fn is_refused(error: &anyhow::Error) -> bool {
     // qual:allow(coupling, deh) reason: "classifying EslError is what this asks"
     matches!(
         error.downcast_ref::<EslError>(),
-        Some(EslError::AuthenticationFailed { .. } | EslError::AccessDenied { .. })
+        Some(
+            EslError::AuthenticationFailed { .. }
+                | EslError::AccessDenied { .. }
+                | EslError::ColonInAuthUser { .. }
+        )
     )
 }
 
@@ -91,7 +95,7 @@ pub(crate) fn is_unreachable(error: &anyhow::Error) -> bool {
     // qual:allow(coupling, deh) reason: "classifying EslError is what this asks"
     error
         .downcast_ref::<EslError>()
-        .is_some_and(|e| e.is_connection_error() || matches!(e, EslError::Timeout { .. }))
+        .is_some_and(|e| e.is_connection_error() || matches!(e, EslError::CommandTimeout { .. }))
 }
 
 /// Check if error is an ESL permission denial (e.g. an event the user is not
@@ -184,10 +188,10 @@ pub(crate) fn print_connect_error(e: &anyhow::Error, config: &AppConfig) {
     if let Some(esl_err) = e.downcast_ref::<EslError>() {
         match esl_err {
             EslError::Io(io_err) => print_io_hint(io_err, config),
-            EslError::Timeout { timeout_ms } => {
+            EslError::ConnectTimeout { timeout_ms } | EslError::HandshakeTimeout { timeout_ms } => {
                 eprintln!("Connection timed out after {} ms", timeout_ms)
             }
-            _ => eprintln!("Error: {}", esl_err),
+            _ => eprintln!("Error: {}", esl_err.display_chain()),
         }
     // qual:allow(coupling, deh) reason: "the failure hint is built from the error"
     } else if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
@@ -210,10 +214,10 @@ mod tests {
         assert!(is_connection_error(&err));
 
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
-        let err: anyhow::Error = EslError::from(io_err).into();
+        let err: anyhow::Error = EslError::Io(io_err).into();
         assert!(is_connection_error(&err));
 
-        let err: anyhow::Error = EslError::Timeout { timeout_ms: 1000 }.into();
+        let err: anyhow::Error = EslError::CommandTimeout { timeout_ms: 1000 }.into();
         assert!(!is_connection_error(&err));
 
         let err: anyhow::Error = EslError::auth_failed("bad password").into();
@@ -224,7 +228,7 @@ mod tests {
     fn test_is_connection_error_with_io_errors() {
         // IO errors wrapped in EslError are connection errors
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
-        let err: anyhow::Error = EslError::from(io_err).into();
+        let err: anyhow::Error = EslError::Io(io_err).into();
         assert!(is_connection_error(&err));
 
         // Bare io::Error not wrapped in EslError is not recognized
@@ -245,10 +249,10 @@ mod tests {
         assert!(is_refused(&err));
 
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
-        let err: anyhow::Error = EslError::from(io_err).into();
+        let err: anyhow::Error = EslError::Io(io_err).into();
         assert!(!is_refused(&err));
 
-        let err: anyhow::Error = EslError::Timeout { timeout_ms: 1000 }.into();
+        let err: anyhow::Error = EslError::CommandTimeout { timeout_ms: 1000 }.into();
         assert!(!is_refused(&err));
     }
 
