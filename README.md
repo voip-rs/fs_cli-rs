@@ -72,6 +72,8 @@ A job result prints as `[command] result` once it arrives. Log lines emitted whi
 
 After the last command fs_cli waits for any outstanding job, forever unless `--job-timeout MS` says otherwise; an expired timeout names the jobs that never reported.
 
+`-t MS` (profile key `command_timeout`, default 2000) bounds the wait for each reply, a `-x` result or a `-X` submission; `-T MS` (profile key `timeout`) bounds the connect and the auth handshake.
+
 A refused command (`-ERR`, `-USAGE`) prints on stderr and the run carries on, exiting 0 as stock fs_cli does. With `--fail-on-error` (profile key `fail_on_error`), the first refused `-x` stops the run: no further command is sent, jobs already submitted are still awaited, and the exit status is 3. A refused job result counts too but does not stop the run.
 
 ### Exit status
@@ -109,7 +111,7 @@ default config at `~/.config/fs_cli.yaml`. A file named with `--config` is
 the only one tried, and a missing one is an error.
 
 A legacy file is read only when no YAML one exists, and carries just the keys a
-batch run needs — host, port, user, password, debug, loglevel, quiet,
+batch run needs — host, port, user, password, debug, loglevel, quiet, timeout,
 connect-timeout. Everything else in it is listed in a warning and ignored.
 
 Profiles override defaults per-connection:

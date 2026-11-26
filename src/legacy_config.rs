@@ -16,7 +16,7 @@ pub fn read(path: &Path) -> Result<FsCliConfig> {
         .with_context(|| format!("Failed to read legacy config file {}", path.display()))?;
 
     warn!(
-        "Reading legacy config {}: keys outside host, port, user, password, debug, loglevel, quiet and connect-timeout are ignored. Convert it to YAML.",
+        "Reading legacy config {}: keys outside host, port, user, password, debug, loglevel, quiet, timeout and connect-timeout are ignored. Convert it to YAML.",
         path.display()
     );
 
@@ -27,10 +27,15 @@ fn parse(content: &str, path: &Path) -> FsCliConfig {
     let mut fs_cli: HashMap<String, ProfileConfig> = HashMap::new();
     let mut ignored = BTreeSet::new();
     let mut connect_timeout = None;
+    let mut command_timeout = None;
 
     for (category, var, val) in pairs(content) {
         if var.eq_ignore_ascii_case("connect-timeout") {
             connect_timeout = parse_number(&var, &val, path);
+            continue;
+        }
+        if var.eq_ignore_ascii_case("timeout") {
+            command_timeout = parse_number(&var, &val, path);
             continue;
         }
 
@@ -46,6 +51,11 @@ fn parse(content: &str, path: &Path) -> FsCliConfig {
     if let Some(timeout) = connect_timeout {
         for profile in fs_cli.values_mut() {
             profile.timeout = timeout;
+        }
+    }
+    if let Some(timeout) = command_timeout {
+        for profile in fs_cli.values_mut() {
+            profile.command_timeout = timeout;
         }
     }
 
@@ -231,6 +241,19 @@ mod tests {
                     .timeout,
                 5000
             );
+        }
+    }
+
+    #[test]
+    fn timeout_is_the_command_timeout_not_the_connect_one() {
+        let config = parse_str("[a]\nhost=10.0.0.1\ntimeout=7000\n[b]\nhost=10.0.0.2\n");
+
+        for name in ["a", "b"] {
+            let profile = config
+                .get_profile(name)
+                .expect("profile");
+            assert_eq!(profile.command_timeout, 7000);
+            assert_eq!(profile.timeout, ProfileConfig::default().timeout);
         }
     }
 

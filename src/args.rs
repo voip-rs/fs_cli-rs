@@ -69,9 +69,13 @@ pub struct Args {
     #[arg(long)]
     pub history_file: Option<PathBuf>,
 
-    /// Connection timeout in milliseconds
-    #[arg(short = 'T', long = "connect-timeout")]
+    /// Connect and handshake timeout in milliseconds
+    #[arg(short = 'T', long = "connect-timeout", value_name = "MS")]
     pub timeout: Option<u64>,
+
+    /// How long a command waits for its reply, in milliseconds
+    #[arg(short = 't', long = "timeout", value_name = "MS")]
+    pub command_timeout: Option<u64>,
 
     /// Retry connection on failure
     #[arg(short, long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
@@ -198,6 +202,9 @@ impl Args {
         if let Some(timeout) = self.timeout {
             config.timeout = timeout;
         }
+        if let Some(command_timeout) = self.command_timeout {
+            config.command_timeout = command_timeout;
+        }
         if let Some(retry) = self.retry {
             config.retry = retry;
         }
@@ -278,6 +285,25 @@ mod tests {
         assert!(Args::try_parse_from(["fs_cli", "--color", "rainbow"]).is_err());
     }
 
+    /// `-t` and `-T` are stock fs_cli's split: the reply wait and the connect.
+    #[test]
+    fn command_and_connect_timeouts_are_separate_flags() {
+        use clap::Parser;
+        let mut config = base_app_config();
+        Args::try_parse_from(["fs_cli", "-t", "9000"])
+            .unwrap()
+            .apply_to(&mut config)
+            .unwrap();
+        assert_eq!((config.command_timeout, config.timeout), (9000, 2000));
+
+        let mut config = base_app_config();
+        Args::try_parse_from(["fs_cli", "-T", "300"])
+            .unwrap()
+            .apply_to(&mut config)
+            .unwrap();
+        assert_eq!((config.command_timeout, config.timeout), (2000, 300));
+    }
+
     #[test]
     fn a_command_spanning_lines_is_refused() {
         use clap::Parser;
@@ -306,6 +332,7 @@ mod tests {
             job_timeout: None,
             history_file: None,
             timeout: None,
+            command_timeout: None,
             retry: None,
             reconnect: None,
             events: None,
@@ -328,6 +355,7 @@ mod tests {
             job_timeout: None,
             history_file: None,
             timeout: 2000,
+            command_timeout: 2000,
             retry: true,
             reconnect: true,
             events: true,

@@ -41,8 +41,11 @@ pub struct ProfileConfig {
     /// History file path
     pub history_file: Option<PathBuf>,
 
-    /// Connection timeout in milliseconds
+    /// Connect and handshake timeout in milliseconds
     pub timeout: u64,
+
+    /// How long a command waits for its reply, in milliseconds
+    pub command_timeout: u64,
 
     /// Retry connection on failure
     pub retry: bool,
@@ -83,6 +86,7 @@ impl Default for ProfileConfig {
             color: ColorMode::Line,
             history_file: None,
             timeout: 2000,
+            command_timeout: 2000,
             retry: false,
             reconnect: false,
             events: false,
@@ -109,6 +113,7 @@ struct ProfileOverrides {
     color: Option<ColorMode>,
     history_file: Option<PathBuf>,
     timeout: Option<u64>,
+    command_timeout: Option<u64>,
     retry: Option<bool>,
     reconnect: Option<bool>,
     events: Option<bool>,
@@ -145,6 +150,9 @@ impl<'de> Deserialize<'de> for ProfileConfig {
             timeout: set
                 .timeout
                 .unwrap_or(base.timeout),
+            command_timeout: set
+                .command_timeout
+                .unwrap_or(base.command_timeout),
             retry: set
                 .retry
                 .unwrap_or(base.retry),
@@ -188,6 +196,7 @@ impl ProfileConfig {
             color: self.color,
             history_file: self.history_file,
             timeout: self.timeout,
+            command_timeout: self.command_timeout,
             retry: self.retry,
             reconnect: self.reconnect,
             events: self.events,
@@ -224,6 +233,7 @@ pub struct AppConfig {
     pub color: ColorMode,
     pub history_file: Option<PathBuf>,
     pub timeout: u64,
+    pub command_timeout: u64,
     pub retry: bool,
     pub reconnect: bool,
     pub events: bool,
