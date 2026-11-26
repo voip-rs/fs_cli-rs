@@ -137,38 +137,33 @@ impl Jobs {
     }
 
     /// When the next job not yet reported late becomes late.
-    pub fn next_overdue(&mut self, after: Duration) -> Option<Instant> {
-        let mut next: Option<Instant> = None;
+    pub fn next_overdue(&self, after: Duration) -> Option<Instant> {
         self.tracker
-            .retain(|_, job| {
-                if !job.warned {
-                    let due = job.submitted + after;
-                    next = Some(next.map_or(due, |n| n.min(due)));
-                }
-                true
-            });
-        next
+            .iter()
+            .filter(|(_, job)| !job.warned)
+            .map(|(_, job)| job.submitted + after)
+            .min()
     }
 
     /// Tell the operator about every job still running `after` its submission,
     /// once each; the job stays pending.
     pub fn warn_overdue(&mut self, now: Instant, after: Duration, output: &Output) {
-        self.tracker
-            .retain(|uuid, job| {
-                if !job.warned && now >= job.submitted + after {
-                    job.warned = true;
-                    output.print_labeled(
-                        "Warning",
-                        &format!(
-                            "job {} ({}) is taking longer than expected ({} ms)",
-                            uuid,
-                            job.command,
-                            after.as_millis()
-                        ),
-                    );
-                }
-                true
-            });
+        for (uuid, job) in self
+            .tracker
+            .iter_mut()
+            .filter(|(_, job)| !job.warned && now >= job.submitted + after)
+        {
+            job.warned = true;
+            output.print_labeled(
+                "Warning",
+                &format!(
+                    "job {} ({}) is taking longer than expected ({} ms)",
+                    uuid,
+                    job.command,
+                    after.as_millis()
+                ),
+            );
+        }
     }
 
     /// Report every pending job with why its result will not be shown, and
@@ -184,26 +179,23 @@ impl Jobs {
             });
     }
 
-    /// One line per pending job: Job-UUID, elapsed time, command.
-    pub fn list(&mut self, now: Instant) -> Vec<String> {
-        let mut rows = Vec::new();
-        self.tracker
-            .retain(|uuid, job| {
-                rows.push((
-                    job.submitted,
-                    format!(
-                        "{}  {:>6} ms  running  {}",
-                        uuid,
-                        now.duration_since(job.submitted)
-                            .as_millis(),
-                        job.command
-                    ),
-                ));
-                true
-            });
-        rows.sort();
-        rows.into_iter()
-            .map(|(_, row)| row)
+    /// One line per pending job, oldest first: Job-UUID, elapsed time, command.
+    pub fn list(&self, now: Instant) -> Vec<String> {
+        let mut jobs: Vec<_> = self
+            .tracker
+            .iter()
+            .collect();
+        jobs.sort_by_key(|(_, job)| job.submitted);
+        jobs.into_iter()
+            .map(|(uuid, job)| {
+                format!(
+                    "{}  {:>6} ms  running  {}",
+                    uuid,
+                    now.duration_since(job.submitted)
+                        .as_millis(),
+                    job.command
+                )
+            })
             .collect()
     }
 
@@ -213,13 +205,12 @@ impl Jobs {
     }
 
     /// `command (Job-UUID)` for every pending job, sorted.
-    pub fn outstanding(&mut self) -> Vec<String> {
-        let mut pending = Vec::new();
-        self.tracker
-            .retain(|uuid, job| {
-                pending.push(format!("{} ({})", job.command, uuid));
-                true
-            });
+    pub fn outstanding(&self) -> Vec<String> {
+        let mut pending: Vec<String> = self
+            .tracker
+            .iter()
+            .map(|(uuid, job)| format!("{} ({})", job.command, uuid))
+            .collect();
         pending.sort();
         pending
     }
