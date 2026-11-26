@@ -45,8 +45,10 @@ pub struct ProfileConfig {
     /// Connect and handshake timeout in milliseconds
     pub timeout: u64,
 
-    /// How long a command waits for its reply, in milliseconds
-    pub command_timeout: u64,
+    /// How long a command waits for its reply, in milliseconds; unset waits
+    /// for the reply or the connection's end
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_timeout: Option<u64>,
 
     /// Retry connection on failure
     pub retry: bool,
@@ -90,7 +92,7 @@ impl Default for ProfileConfig {
             color: ColorMode::Line,
             history_file: None,
             timeout: 2000,
-            command_timeout: 2000,
+            command_timeout: None,
             retry: false,
             reconnect: false,
             events: false,
@@ -158,7 +160,7 @@ impl<'de> Deserialize<'de> for ProfileConfig {
                 .unwrap_or(base.timeout),
             command_timeout: set
                 .command_timeout
-                .unwrap_or(base.command_timeout),
+                .or(base.command_timeout),
             retry: set
                 .retry
                 .unwrap_or(base.retry),
@@ -243,7 +245,7 @@ pub struct AppConfig {
     pub color: ColorMode,
     pub history_file: Option<PathBuf>,
     pub timeout: u64,
-    pub command_timeout: u64,
+    pub command_timeout: Option<u64>,
     pub retry: bool,
     pub reconnect: bool,
     pub events: bool,

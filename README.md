@@ -57,11 +57,11 @@ configured profiles.
 
 ## Interactive commands run as background jobs
 
-A line typed at the prompt goes to the switch as `bgapi`, so a slow command never holds the connection: the prompt stays usable and other commands go out at once. A result that arrives within `-t` (default 2000 ms) prints as an api reply would. Past it, fs_cli warns that the job is taking longer than expected and keeps waiting; the result prints when it comes, labelled `[Job-UUID command]`. `/jobs` lists the jobs still waiting.
+A line typed at the prompt goes to the switch as `bgapi`, so a slow command never holds the connection: the prompt stays usable and other commands go out at once. A result that arrives within `-t` (2000 ms when unset) prints as an api reply would. Past it, fs_cli warns that the job is taking longer than expected and keeps waiting; the result prints when it comes, labelled `[Job-UUID command]`. `/jobs` lists the jobs still waiting.
 
 Jobs run in parallel on the switch, so two commands typed back to back can take effect in either order. `--command-order serial` (profile key `command_order`) keeps the order typed: a line waits in fs_cli until every job before it has answered, and `/jobs` lists it as queued. A job in flight when the connection drops is reported as having an unknown outcome, and a line still queued as not sent.
 
-An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command slower than `-t` times out (`command #3 timed out after 2000ms`) and its reply, if it comes, prints as `[late reply to command #3] ...`.
+An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command waits as `-x` does: with `-t` set, one slower than it times out (`command #3 timed out after 2000ms`) and its reply, if it comes, prints as `[late reply to command #3] ...`.
 
 ## Non-interactive modes
 
@@ -80,7 +80,7 @@ A job result prints as `[command] result` once it arrives. Log lines emitted whi
 
 After the last command fs_cli waits for any outstanding job, forever unless `--job-timeout MS` says otherwise; an expired timeout names the jobs that never reported.
 
-`-t MS` (profile key `command_timeout`, default 2000) bounds the wait for each reply, a `-x` result or a `-X` submission; `-T MS` (profile key `timeout`) bounds the connect and the auth handshake.
+`-T MS` (profile key `timeout`) bounds the connect and the auth handshake, nothing after. As in stock fs_cli, a command waits for its reply unless `-t MS` (profile key `command_timeout`) is given; past it, a `-x` result or a `-X` submission ends the run with exit status 254. `-t 0` is the same as no `-t`. A script that must not hang on a stuck switch sets `-t`.
 
 A refused command (`-ERR`, `-USAGE`) prints on stderr and the run carries on, exiting 0 as stock fs_cli does. With `--fail-on-error` (profile key `fail_on_error`), the first refused `-x` stops the run: no further command is sent, jobs already submitted are still awaited, and the exit status is 3. A refused job result counts too but does not stop the run.
 

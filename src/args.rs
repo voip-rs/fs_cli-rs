@@ -211,7 +211,7 @@ impl Args {
             config.timeout = timeout;
         }
         if let Some(command_timeout) = self.command_timeout {
-            config.command_timeout = command_timeout;
+            config.command_timeout = Some(command_timeout);
         }
         if let Some(retry) = self.retry {
             config.retry = retry;
@@ -311,14 +311,14 @@ mod tests {
             .unwrap()
             .apply_to(&mut config)
             .unwrap();
-        assert_eq!((config.command_timeout, config.timeout), (9000, 2000));
+        assert_eq!((config.command_timeout, config.timeout), (Some(9000), 2000));
 
         let mut config = base_app_config();
         Args::try_parse_from(["fs_cli", "-T", "300"])
             .unwrap()
             .apply_to(&mut config)
             .unwrap();
-        assert_eq!((config.command_timeout, config.timeout), (2000, 300));
+        assert_eq!((config.command_timeout, config.timeout), (None, 300));
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
             job_timeout: None,
             history_file: None,
             timeout: 2000,
-            command_timeout: 2000,
+            command_timeout: None,
             retry: true,
             reconnect: true,
             events: true,

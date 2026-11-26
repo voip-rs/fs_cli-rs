@@ -7,7 +7,6 @@ fs_cli:
     debug: 0
     color: line
     timeout: 2000
-    command_timeout: 2000
     retry: false
     reconnect: false
     events: false
@@ -39,6 +38,7 @@ fs_cli:
     history_file: /var/log/fs_cli_history
     debug: 1
     timeout: 5000
+    command_timeout: 10000
     retry: true
     reconnect: true
     macros:

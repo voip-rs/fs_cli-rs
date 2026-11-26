@@ -14,8 +14,8 @@
 //! BACKGROUND_JOB is subscribed with an `event` line of its own: the switch
 //! refuses a whole line when one event in it is denied, and HEARTBEAT, which
 //! arms the liveness timer, must not be lost with it. A user denied
-//! BACKGROUND_JOB gets api on that connection: a command past -t times out,
-//! and its reply, if it comes, prints labelled with the timeout's ticket.
+//! BACKGROUND_JOB gets api on that connection: a command past -t, when set,
+//! times out, and its reply, if it comes, prints labelled with its ticket.
 // qual:allow(srp, file_length=370) reason: "one session lifecycle, well under the project's 2000-line cap"
 
 use crate::channel_info::ChannelProvider;
@@ -50,6 +50,16 @@ use tokio::time::{sleep_until, Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// When a job is reported late if `-t` is not given; it is never abandoned.
+const DEFAULT_LATE_AFTER: Duration = Duration::from_millis(2000);
+
+/// `-t 0`, like no `-t`, sets no timeout, so it leaves the default warning.
+fn late_after(command_timeout: Option<u64>) -> Duration {
+    match command_timeout {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => DEFAULT_LATE_AFTER,
+    }
+}
 
 #[cfg(unix)]
 type SavedTerminal = Option<libc::termios>;
@@ -138,7 +148,7 @@ pub async fn run_interactive_mode(
             output: &output,
             macros: &macros,
             channel_provider: &channel_provider,
-            command_timeout: Duration::from_millis(config.command_timeout),
+            late_after: late_after(config.command_timeout),
         },
         cmd_rx: &mut chans.commands,
         quit_rx: &mut chans.quit,
@@ -404,7 +414,7 @@ struct SessionParts<'a> {
     macros: &'a HashMap<String, String>,
     channel_provider: &'a ChannelProvider,
     /// How long a job runs before the operator is told it is late.
-    command_timeout: Duration,
+    late_after: Duration,
 }
 
 /// What the event consumer hands the command loop.
@@ -489,7 +499,7 @@ async fn run_command_loop(
             .jobs
             .next_overdue(
                 ctx.parts
-                    .command_timeout,
+                    .late_after,
             );
         tokio::select! {
             Some(message) = conn.results.recv() => {
@@ -501,7 +511,7 @@ async fn run_command_loop(
                 }
             }
             _ = sleep_until(overdue.unwrap_or_else(Instant::now)), if overdue.is_some() => {
-                conn.jobs.warn_overdue(Instant::now(), ctx.parts.command_timeout, ctx.parts.output);
+                conn.jobs.warn_overdue(Instant::now(), ctx.parts.late_after, ctx.parts.output);
             }
             result = &mut *event_task => {
                 match result {
@@ -723,6 +733,13 @@ mod tests {
         let cause = classify_event_task_exit(ConnectionStatus::Connected);
         assert!(matches!(cause, DisconnectCause::Unknown));
         assert_eq!(cause.to_string(), "reason unknown");
+    }
+
+    #[test]
+    fn t_zero_warns_like_no_t() {
+        assert_eq!(late_after(Some(0)), DEFAULT_LATE_AFTER);
+        assert_eq!(late_after(None), DEFAULT_LATE_AFTER);
+        assert_eq!(late_after(Some(300)), Duration::from_millis(300));
     }
 
     #[test]

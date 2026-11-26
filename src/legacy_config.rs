@@ -55,7 +55,7 @@ fn parse(content: &str, path: &Path) -> FsCliConfig {
     }
     if let Some(timeout) = command_timeout {
         for profile in fs_cli.values_mut() {
-            profile.command_timeout = timeout;
+            profile.command_timeout = Some(timeout);
         }
     }
 
@@ -252,7 +252,7 @@ mod tests {
             let profile = config
                 .get_profile(name)
                 .expect("profile");
-            assert_eq!(profile.command_timeout, 7000);
+            assert_eq!(profile.command_timeout, Some(7000));
             assert_eq!(profile.timeout, ProfileConfig::default().timeout);
         }
     }

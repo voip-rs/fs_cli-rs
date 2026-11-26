@@ -1,7 +1,8 @@
 //! Connecting to FreeSWITCH, subscribing, and reporting connection failures.
 //!
-//! `-T` bounds the TCP connect and the auth handshake; `-t` bounds the wait for
-//! each command's reply on a live connection.
+//! `-T` bounds the TCP connect and the auth handshake; `-t` bounds each command on
+//! a live connection, and without it a command waits for its reply or the
+//! connection's end, as stock fs_cli does.
 
 use crate::config::AppConfig;
 use anyhow::{Context, Result};
@@ -38,7 +39,11 @@ pub(crate) async fn connect_to_freeswitch(
         .context("Failed to connect to FreeSWITCH")?;
 
     // Without this the library's own 5s default governs every command.
-    client.set_command_timeout(Duration::from_millis(config.command_timeout));
+    client.set_command_timeout(
+        config
+            .command_timeout
+            .map(Duration::from_millis),
+    );
 
     Ok((client, events))
 }

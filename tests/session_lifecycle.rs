@@ -588,7 +588,7 @@ async fn an_unanswered_command_exits_254() {
     let server = switch().await;
     let dir = scratch_dir("api-silent");
 
-    let run = spawn_batch(&dir, server.addr(), &["-T", "300", "-x", "reloadxml"]);
+    let run = spawn_batch(&dir, server.addr(), &["-t", "300", "-x", "reloadxml"]);
     let mut conn = accept(&server).await;
     expect_next(&mut conn, "api reloadxml").await;
     let output = finish(run).await;
@@ -1141,4 +1141,30 @@ async fn a_completion_lookup_answered_late_prints_nothing() {
         screen
     );
     kill(child);
+}
+
+#[tokio::test]
+async fn without_t_a_command_waits_past_the_old_two_seconds() {
+    let server = switch().await;
+    let dir = scratch_dir("api-patient");
+
+    let run = spawn_batch(&dir, server.addr(), &["-x", "slow"]);
+    let mut conn = accept(&server).await;
+    expect_next(&mut conn, "api slow").await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    conn.reply_api("+OK slow done\n")
+        .await
+        .expect("slow reply");
+    let rest = serve(conn, None).await;
+    let output = finish(run).await;
+
+    assert!(
+        output
+            .status
+            .success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("+OK slow done"));
+    assert!(rest.is_empty(), "{:?}", rest);
 }
