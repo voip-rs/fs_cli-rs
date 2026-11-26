@@ -502,9 +502,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.4"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -671,13 +671,12 @@ dependencies = [
 
 [[package]]
 name = "rustyline"
-version = "18.0.0"
-source = "git+https://github.com/ticpu/rustyline.git?branch=eventhandler-macro#76c5116c99a5b84014fba8e4eb3811f3d8752578"
+version = "19.0.0"
+source = "git+https://github.com/ticpu/rustyline.git?branch=eventhandler-macro#26498e76a3dae288cfce66f9779443933d8b5d61"
 dependencies = [
  "bitflags",
  "clipboard-win",
  "home",
- "libc",
  "log",
  "memchr",
  "nix",

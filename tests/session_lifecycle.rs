@@ -884,19 +884,16 @@ fn type_line(pty: &Pty, line: &str) {
     type_keys(pty, &format!("{}\r", line));
 }
 
-/// One key at a time: rustyline stalls on a burst it did not see as a paste.
+/// All keys in one write, as an unmarked paste arrives.
 fn type_keys(pty: &Pty, keys: &str) {
     let mut master = std::fs::File::from(
         pty.master
             .try_clone()
             .expect("clone pty master"),
     );
-    for key in keys.bytes() {
-        master
-            .write_all(&[key])
-            .expect("type into pty");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    master
+        .write_all(keys.as_bytes())
+        .expect("type into pty");
 }
 
 fn screen_now(pty: &Pty) -> String {
@@ -1095,6 +1092,8 @@ async fn serial_order_holds_a_line_until_the_job_before_it_answers() {
         .expect("ack slow");
 
     type_line(&pty, "status");
+    // A line typed before rustyline is back in readline() is lost.
+    tokio::time::sleep(Duration::from_millis(200)).await;
     type_line(&pty, "/jobs");
     let screen = screen_showing(&pty, "queued  status").await;
     assert!(screen.contains("queued  status"), "{:?}", screen);
@@ -1167,4 +1166,29 @@ async fn without_t_a_command_waits_past_the_old_two_seconds() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("+OK slow done"));
     assert!(rest.is_empty(), "{:?}", rest);
+}
+
+#[tokio::test]
+async fn a_function_key_sends_its_macro_over_a_half_typed_line() {
+    let (_server, pty, child, mut conn) = interactive("fn-key", &[]).await;
+    answer_startup(&mut conn).await;
+
+    type_keys(&pty, "show ch\x1b[17~");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi reloadxml");
+    kill(child);
+}
+
+#[tokio::test]
+#[ignore = "rustyline drops the rest of a burst once a line is accepted"]
+async fn two_lines_in_one_write_both_run() {
+    let (_server, pty, child, mut conn) = interactive("two-lines", &[]).await;
+    answer_startup(&mut conn).await;
+
+    type_keys(&pty, "one\rtwo\r");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi one");
+    conn.reply_bgapi("job-one")
+        .await
+        .expect("ack one");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi two");
+    kill(child);
 }
