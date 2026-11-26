@@ -39,10 +39,10 @@ use crossterm::{
     ExecutableCommand,
 };
 use freeswitch_esl_tokio::{
-    ConnectionStatus, DisconnectReason, EslClient, EslError, EslEvent, EslEventStream,
-    EslEventType, EslResponse, EventFormat,
+    CommandTicket, ConnectionStatus, DisconnectReason, EslClient, EslError, EslEvent,
+    EslEventStream, EslEventType, EslResponse, EventFormat,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -189,12 +189,14 @@ async fn run_reconnect_loop(
 ) -> Result<()> {
     loop {
         let mode = setup_subscriptions(&client, config, output).await;
-        let (job_tx, job_rx) = mpsc::unbounded_channel();
-        let mut event_task = spawn_event_consumer(events, output, log_destination.cloned(), job_tx);
+        let (to_loop, from_consumer) = mpsc::unbounded_channel();
+        let mut event_task =
+            spawn_event_consumer(events, output, log_destination.cloned(), to_loop);
         let mut conn = ConnectionJobs {
             mode,
             jobs: Jobs::new(ResultLabel::WhenLate),
-            results: job_rx,
+            results: from_consumer,
+            abandoned: HashSet::new(),
             order: config.command_order,
             queued: VecDeque::new(),
         };
@@ -202,17 +204,16 @@ async fn run_reconnect_loop(
         let result = run_command_loop(&client, ctx, &mut event_task, &mut conn).await;
 
         event_task.abort();
-        while let Ok(event) = conn
+        while let Ok(message) = conn
             .results
             .try_recv()
         {
-            conn.jobs
-                .complete(
-                    &event,
-                    ctx.parts
-                        .processor,
-                    output,
-                );
+            conn.take(
+                message,
+                ctx.parts
+                    .processor,
+                output,
+            );
         }
         conn.jobs
             .strand(output, stranded_reason(&result));
@@ -342,7 +343,7 @@ fn spawn_event_consumer(
     mut events: EslEventStream,
     output: &Output,
     log_destination: Option<LogDestination>,
-    job_results: mpsc::UnboundedSender<EslEvent>,
+    to_loop: mpsc::UnboundedSender<ToLoop>,
 ) -> JoinHandle<()> {
     let output = output.clone();
     tokio::spawn(async move {
@@ -352,8 +353,8 @@ fn spawn_event_consumer(
         {
             match result {
                 Ok(event) if event.event_type() == Some(EslEventType::BackgroundJob) => {
-                    if job_results
-                        .send(event)
+                    if to_loop
+                        .send(ToLoop::JobResult(event))
                         .is_err()
                     {
                         debug!("command loop gone, BACKGROUND_JOB dropped");
@@ -377,11 +378,15 @@ fn spawn_event_consumer(
                     }
                 }
                 Err(EslError::LateReply { response, ticket }) => {
-                    output.print(format!(
-                        "[late reply to command {}] {}",
-                        ticket,
-                        late_reply_text(&response)
-                    ));
+                    if to_loop
+                        .send(ToLoop::LateReply { response, ticket })
+                        .is_err()
+                    {
+                        debug!(
+                            "command loop gone, late reply to command {} dropped",
+                            ticket
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!("Event stream error: {}", e.display_chain());
@@ -402,17 +407,51 @@ struct SessionParts<'a> {
     command_timeout: Duration,
 }
 
+/// What the event consumer hands the command loop.
+enum ToLoop {
+    JobResult(EslEvent),
+    LateReply {
+        response: Box<EslResponse>,
+        ticket: CommandTicket,
+    },
+}
+
 /// What one connection submitted and how its results reach the loop.
 struct ConnectionJobs {
     mode: CommandMode,
     jobs: Jobs,
-    results: mpsc::UnboundedReceiver<EslEvent>,
+    results: mpsc::UnboundedReceiver<ToLoop>,
+    /// Completion lookups that timed out: their late replies answer nobody.
+    abandoned: HashSet<CommandTicket>,
     order: CommandOrder,
     /// Serial order: lines typed while a job is pending, oldest first.
     queued: VecDeque<String>,
 }
 
 impl ConnectionJobs {
+    /// Print a job result or a late reply, unless the reply answers a
+    /// completion lookup the operator has already moved past.
+    fn take(&mut self, message: ToLoop, processor: &CommandProcessor, output: &Output) {
+        match message {
+            ToLoop::JobResult(event) => {
+                self.jobs
+                    .complete(&event, processor, output);
+            }
+            ToLoop::LateReply { ticket, .. }
+                if self
+                    .abandoned
+                    .remove(&ticket) =>
+            {
+                debug!("completion lookup {} answered after its timeout", ticket);
+            }
+            ToLoop::LateReply { response, ticket } => output.print(format!(
+                "[late reply to command {}] {}",
+                ticket,
+                late_reply_text(&response)
+            )),
+        }
+    }
+
     /// Name every line that never reached the switch, and drop it.
     fn report_unsent(&mut self, output: &Output) {
         for line in self
@@ -453,8 +492,8 @@ async fn run_command_loop(
                     .command_timeout,
             );
         tokio::select! {
-            Some(event) = conn.results.recv() => {
-                conn.jobs.complete(&event, ctx.parts.processor, ctx.parts.output);
+            Some(message) = conn.results.recv() => {
+                conn.take(message, ctx.parts.processor, ctx.parts.output);
                 if let Err(e) = submit_queued(&ctx.parts, client, conn).await {
                     if let Some(end) = report_or_disconnect(ctx.parts.processor, e) {
                         return end;
@@ -479,7 +518,7 @@ async fn run_command_loop(
             }
             Some(request) = ctx.completion_rx.recv() => {
                 let completions =
-                    get_console_complete(client, &request, ctx.parts.channel_provider).await;
+                    get_console_complete(client, &request, ctx.parts.channel_provider, &mut conn.abandoned).await;
                 if let Err(e) = request.response_tx.send(completions) {
                     debug!("completion reply dropped for {:?}: {}", request.line, e);
                 }

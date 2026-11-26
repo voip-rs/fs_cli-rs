@@ -1,6 +1,6 @@
 //! Channel information management for enhanced UUID completion
 
-use crate::completion::Completion;
+use crate::completion::{Completion, COMPLETION_TIMEOUT};
 use crate::log_display::format_caller_id;
 use anyhow::{Context, Result};
 use freeswitch_esl_tokio::EslClient;
@@ -103,7 +103,7 @@ impl ChannelProvider {
     async fn fetch_channels_json(&self, client: &EslClient) -> Result<ChannelsResponse> {
         const COMMAND: &str = "show channels as json";
         let response = client
-            .api(COMMAND)
+            .api_with_timeout(COMMAND, COMPLETION_TIMEOUT)
             .await
             .with_context(|| format!("ESL API call '{}' failed", COMMAND))?;
 

@@ -1,15 +1,25 @@
 //! FreeSWITCH console_complete API integration
 
 use crate::channel_info::ChannelProvider;
-use crate::completion::{Completion, CompletionRequest};
-use freeswitch_esl_tokio::EslClient;
+use crate::completion::{Completion, CompletionRequest, COMPLETION_TIMEOUT};
+use freeswitch_esl_tokio::{CommandTicket, EslClient, EslError};
+use std::collections::HashSet;
 use tracing::{trace, warn};
+
+/// The ticket of a lookup that timed out, so its late reply can be told apart
+/// from one the operator is waiting for.
+fn note_abandoned(error: &EslError, abandoned: &mut HashSet<CommandTicket>) {
+    if let EslError::CommandTimeout { ticket, .. } = error {
+        abandoned.insert(*ticket);
+    }
+}
 
 /// Get console completions from FreeSWITCH using the console_complete API
 pub async fn get_console_complete(
     client: &EslClient,
     request: &CompletionRequest,
     channel_provider: &ChannelProvider,
+    abandoned: &mut HashSet<CommandTicket>,
 ) -> Vec<Completion> {
     let line = request
         .line
@@ -43,13 +53,16 @@ pub async fn get_console_complete(
             }
             Ok(None) => trace!("Falling back to default UUID completion"),
             Err(e) => {
+                if let Some(esl) = e.downcast_ref::<EslError>() {
+                    note_abandoned(esl, abandoned);
+                }
                 warn!("UUID channel lookup failed, falling back: {:#}", e);
             }
         }
     }
 
     match client
-        .api(&cmd)
+        .api_with_timeout(&cmd, COMPLETION_TIMEOUT)
         .await
     {
         Ok(response) => match response.api_result() {
@@ -65,6 +78,7 @@ pub async fn get_console_complete(
             }
         },
         Err(e) => {
+            note_abandoned(&e, abandoned);
             tracing::debug!("Failed to get console completions: {}", e.display_chain());
             Vec::new()
         }

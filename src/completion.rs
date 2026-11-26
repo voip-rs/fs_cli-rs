@@ -14,6 +14,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::trace;
 
+/// How long Tab waits for the switch's candidates, and each lookup for its reply.
+pub const COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Typed completion item returned from all completion sources
 #[derive(Debug)]
 pub enum Completion {
@@ -295,8 +298,7 @@ impl FsCliCompleter {
 
         trace!("Sent completion request, waiting for response...");
 
-        const SESSION_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
-        match response_rx.recv_timeout(SESSION_REPLY_TIMEOUT) {
+        match response_rx.recv_timeout(COMPLETION_TIMEOUT) {
             Ok(completions) => {
                 trace!("Received {} completions", completions.len());
                 completions

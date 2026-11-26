@@ -881,12 +881,17 @@ async fn a_refused_job_counts_and_names_the_job() {
 
 /// Type `line` and Enter into the child's terminal.
 fn type_line(pty: &Pty, line: &str) {
+    type_keys(pty, &format!("{}\r", line));
+}
+
+/// One key at a time: rustyline stalls on a burst it did not see as a paste.
+fn type_keys(pty: &Pty, keys: &str) {
     let mut master = std::fs::File::from(
         pty.master
             .try_clone()
             .expect("clone pty master"),
     );
-    for key in format!("{}\r", line).bytes() {
+    for key in keys.bytes() {
         master
             .write_all(&[key])
             .expect("type into pty");
@@ -1104,5 +1109,36 @@ async fn serial_order_holds_a_line_until_the_job_before_it_answers() {
         .await
         .expect("slow result");
     assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi status");
+    kill(child);
+}
+
+#[tokio::test]
+async fn a_completion_lookup_answered_late_prints_nothing() {
+    let (_server, pty, child, mut conn) = interactive("late-completion", &[]).await;
+    answer_startup(&mut conn).await;
+
+    type_keys(&pty, "sta\t");
+    expect_next(&mut conn, "api console_complete").await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    conn.reply_api("+OK sta\n")
+        .await
+        .expect("late completion reply");
+
+    // A typed command after it proves the reply was read before we look.
+    type_keys(&pty, "\x15status\r");
+    expect_next(&mut conn, "bgapi status").await;
+    conn.reply_bgapi("job-status")
+        .await
+        .expect("ack status");
+    conn.send_background_job(&background_job("job-status", "status"), "+OK up\n")
+        .await
+        .expect("status result");
+    let screen = screen_showing(&pty, "+OK up").await;
+    assert!(screen.contains("+OK up"), "{:?}", screen);
+    assert!(
+        !screen.contains("late reply"),
+        "a lookup the operator moved past must not print: {:?}",
+        screen
+    );
     kill(child);
 }
