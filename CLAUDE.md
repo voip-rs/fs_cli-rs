@@ -24,7 +24,8 @@ Use the `/release` command (`.claude/commands/release.md`).
 ## Project Structure
 - Binary: `fs_cli` (see `Cargo.toml`)
 - `src/main.rs` — entry point, connection helpers, error formatting
-- `src/batch.rs` — `-x`/`-X` batch loop, background-job correlation, log streaming
+- `src/batch.rs` — `-x`/`-X` batch loop, log streaming
+- `src/jobs.rs` — bgapi jobs: submit, Job-UUID correlation, result printing
 - `src/session.rs` — interactive session loop, event consumer, reconnection
 - `src/readline.rs` — readline thread, function keys, CompletionRequest
 - `src/commands.rs` — command execution and formatting

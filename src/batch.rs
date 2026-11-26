@@ -3,11 +3,12 @@
 use crate::commands::{Answer, CommandProcessor};
 use crate::config::{AppConfig, BatchCommand};
 use crate::connection::enable_logging;
+use crate::jobs::Jobs;
 use crate::log_display::{is_log_event, LogDestination};
 use crate::printer::Output;
 use anyhow::{anyhow, Context, Result};
 use freeswitch_esl_tokio::{
-    BgJobTracker, EslClient, EslError, EslEvent, EslEventStream, EslEventType, EventFormat,
+    EslClient, EslError, EslEvent, EslEventStream, EslEventType, EventFormat,
 };
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -112,7 +113,7 @@ struct Batch<'a> {
     processor: CommandProcessor,
     output: Output,
     log: Option<LogDestination>,
-    jobs: BgJobTracker<String>,
+    jobs: Jobs,
     /// Set before the first user command is handed to the library.
     dispatched: bool,
     refused: bool,
@@ -132,7 +133,7 @@ impl<'a> Batch<'a> {
             processor: CommandProcessor::new(&output, config.originate_check),
             output,
             log,
-            jobs: BgJobTracker::new(),
+            jobs: Jobs::new(),
             dispatched: false,
             refused: false,
         }
@@ -205,48 +206,19 @@ impl<'a> Batch<'a> {
     }
 
     async fn submit_job(&mut self, command: &str) -> Result<Answer> {
-        let sent = self
-            .processor
-            .checked_originate(command);
-        let command = sent.as_str();
         self.dispatched = true;
-        match self
-            .jobs
-            .bgapi(self.client, command, command.to_string())
+        self.jobs
+            .submit(self.client, &self.processor, command)
             .await
-        {
-            Ok(uuid) => {
-                debug!("bgapi {} submitted as job {}", command, uuid);
-                Ok(Answer::Accepted)
-            }
-            // Context goes on afterwards: the refusal is classified from the
-            // bare EslError.
-            Err(e) => self
-                .processor
-                .report_refusal(anyhow::Error::new(e), None)
-                .map(|()| Answer::Refused)
-                .with_context(|| format!("bgapi {}", command)),
-        }
     }
 
     fn handle_event(&mut self, event: &EslEvent) {
-        if let Some((command, result)) = self
+        if let Some(answer) = self
             .jobs
-            .try_complete(event)
+            .complete(event, &self.processor, &self.output)
         {
-            match result.parse_body() {
-                Ok(body) => self
-                    .output
-                    .print(format!("[{}] {}", command, body.trim())),
-                Err(e) => match self
-                    .processor
-                    .report_refusal(anyhow::Error::new(e), Some(&command))
-                {
-                    Ok(()) => self.refused = true,
-                    Err(e) => self
-                        .processor
-                        .handle_error(e.context(format!("bgapi {}", command))),
-                },
+            if answer == Answer::Refused {
+                self.refused = true;
             }
             return;
         }
@@ -304,7 +276,8 @@ impl<'a> Batch<'a> {
                         return Err(anyhow!(
                             "no result after {} ms for: {}",
                             ms,
-                            self.outstanding()
+                            self.jobs
+                                .outstanding()
                                 .join(", ")
                         ))
                     }
@@ -318,7 +291,8 @@ impl<'a> Batch<'a> {
         match outcome {
             Drained::StreamEnded => Err(anyhow!(
                 "FreeSWITCH closed the event stream with no result for: {}",
-                self.outstanding()
+                self.jobs
+                    .outstanding()
                     .join(", ")
             )),
             Drained::Idle | Drained::SinkClosed => Ok(()),
@@ -345,18 +319,5 @@ impl<'a> Batch<'a> {
             }
         }
         Ok(Drained::Idle)
-    }
-
-    /// `retain` is the only accessor carrying both the Job-UUID and the command
-    /// that asked for it; every job is kept.
-    fn outstanding(&mut self) -> Vec<String> {
-        let mut pending = Vec::new();
-        self.jobs
-            .retain(|uuid, command| {
-                pending.push(format!("{} ({})", command, uuid));
-                true
-            });
-        pending.sort();
-        pending
     }
 }
