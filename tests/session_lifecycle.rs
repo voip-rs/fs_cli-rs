@@ -54,8 +54,9 @@ async fn next(conn: &mut MockConnection) -> std::io::Result<String> {
 }
 
 async fn expect_next(conn: &mut MockConnection, prefix: &str) -> String {
-    let command = next(conn)
+    let command = tokio::time::timeout(WAIT_LIMIT, next(conn))
         .await
+        .unwrap_or_else(|_| panic!("no command after {:?}, expected {:?}", WAIT_LIMIT, prefix))
         .expect("read command");
     assert!(
         command.starts_with(prefix),
