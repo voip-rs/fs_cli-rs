@@ -55,6 +55,14 @@ fs_cli production
 Run `fs_cli --help` for full options, `fs_cli --list-profiles` to see
 configured profiles.
 
+## Interactive commands run as background jobs
+
+A line typed at the prompt goes to the switch as `bgapi`, so a slow command never holds the connection: the prompt stays usable and other commands go out at once. A result that arrives within `-t` (default 2000 ms) prints as an api reply would. Past it, fs_cli warns that the job is taking longer than expected and keeps waiting; the result prints when it comes, labelled `[Job-UUID command]`. `/jobs` lists the jobs still waiting.
+
+Jobs run in parallel on the switch, so two commands typed back to back can take effect in either order. A job in flight when the connection drops is reported as having an unknown outcome.
+
+An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command slower than `-t` times out and its reply is not shown.
+
 ## Non-interactive modes
 
 What fs_cli does with no `-x`/`-X` depends on whether it has a terminal, because interactive mode needs one on both stdin and stdout.

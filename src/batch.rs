@@ -3,7 +3,7 @@
 use crate::commands::{Answer, CommandProcessor};
 use crate::config::{AppConfig, BatchCommand};
 use crate::connection::enable_logging;
-use crate::jobs::Jobs;
+use crate::jobs::{Jobs, ResultLabel};
 use crate::log_display::{is_log_event, LogDestination};
 use crate::printer::Output;
 use anyhow::{anyhow, Context, Result};
@@ -133,7 +133,7 @@ impl<'a> Batch<'a> {
             processor: CommandProcessor::new(&output, config.originate_check),
             output,
             log,
-            jobs: Jobs::new(),
+            jobs: Jobs::new(ResultLabel::Command),
             dispatched: false,
             refused: false,
         }

@@ -95,20 +95,11 @@ impl CommandProcessor {
         let sent = self.checked_originate(command);
         let command = sent.as_str();
 
-        match self
-            .handle_special_command(client, command)
+        if let Some(answer) = self
+            .execute_special(client, command)
             .await
         {
-            Ok(Some(result)) => {
-                self.print_message(&result);
-                return Ok(Answer::Accepted);
-            }
-            Ok(None) => {}
-            Err(e) => {
-                return self
-                    .report_refusal(e, None)
-                    .map(|()| Answer::Refused)
-            }
+            return answer;
         }
 
         match self
@@ -127,6 +118,29 @@ impl CommandProcessor {
             Err(e) => self
                 .report_refusal(e, None)
                 .map(|()| Answer::Refused),
+        }
+    }
+
+    /// Answer a command fs_cli handles itself (`log`, `uptime`); `None` for one
+    /// that goes to the switch as typed.
+    pub async fn execute_special(
+        &self,
+        client: &EslClient,
+        command: &str,
+    ) -> Option<Result<Answer>> {
+        match self
+            .handle_special_command(client, command)
+            .await
+        {
+            Ok(Some(result)) => {
+                self.print_message(&result);
+                Some(Ok(Answer::Accepted))
+            }
+            Ok(None) => None,
+            Err(e) => Some(
+                self.report_refusal(e, None)
+                    .map(|()| Answer::Refused),
+            ),
         }
     }
 
@@ -275,6 +289,7 @@ Built-in Commands:
   /quit, /exit, /bye        - Exit the CLI
   /history                  - Show command history
   /clear                    - Clear screen
+  /jobs                     - List commands still waiting for their result
 
 Configuration:
   Profiles can be configured in ~/.config/fs_cli.yaml or /etc/freeswitch/fs_cli.yaml

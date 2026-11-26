@@ -1,11 +1,24 @@
 //! Interactive session management
 //!
 //! Owns the main select! loop, event consumer task, and reconnection logic.
+//!
+//! A typed line goes to the switch as bgapi, not api. mod_event_socket runs an
+//! api inline on the listener thread, so one slow command holds the socket and
+//! every line typed after it; and once the client stops waiting, the library
+//! discards the late reply to keep replies paired with commands. A bgapi is
+//! acknowledged at once and answers with a BACKGROUND_JOB event, so a slow
+//! command becomes a warning and its result still prints when it arrives.
+//! Jobs run in parallel switch threads, so their effects can land in any order.
+//!
+//! BACKGROUND_JOB is subscribed with an `event` line of its own: the switch
+//! refuses a whole line when one event in it is denied, and HEARTBEAT, which
+//! arms the liveness timer, must not be lost with it. A user denied
+//! BACKGROUND_JOB gets api, with its old timeout, on that connection.
 // qual:allow(srp, file_length=370) reason: "one session lifecycle, well under the project's 2000-line cap"
 
 use crate::channel_info::ChannelProvider;
 use crate::client_command::{ClientCommand, ParseError};
-use crate::commands::CommandProcessor;
+use crate::commands::{Answer, CommandProcessor};
 use crate::completion::CompletionRequest;
 use crate::config::AppConfig;
 use crate::connection::{
@@ -13,6 +26,7 @@ use crate::connection::{
     subscribe_heartbeat, subscribe_to_events,
 };
 use crate::console_complete::get_console_complete;
+use crate::jobs::{Jobs, ResultLabel};
 use crate::log_display::{display_log_event, format_channel_event, is_log_event, LogDestination};
 use crate::printer::{Output, Printer};
 use crate::readline::{build_macros, parse_function_key, run_readline_loop, ReadlineChannels};
@@ -22,12 +36,15 @@ use crossterm::{
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
-use freeswitch_esl_tokio::{ConnectionStatus, DisconnectReason, EslClient, EslEventStream};
+use freeswitch_esl_tokio::{
+    ConnectionStatus, DisconnectReason, EslClient, EslEvent, EslEventStream, EslEventType,
+    EventFormat,
+};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::Duration;
+use tokio::time::{sleep_until, Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -99,7 +116,6 @@ pub async fn run_interactive_mode(
 ) -> Result<()> {
     let mut output = Output::new(config.color);
 
-    setup_subscriptions(&client, config).await;
     println!("FreeSWITCH CLI ready. Type 'help' for commands, '/quit' to exit.\n");
 
     let macros = build_macros(config);
@@ -120,6 +136,7 @@ pub async fn run_interactive_mode(
             output: &output,
             macros: &macros,
             channel_provider: &channel_provider,
+            command_timeout: Duration::from_millis(config.command_timeout),
         },
         cmd_rx: &mut chans.commands,
         quit_rx: &mut chans.quit,
@@ -169,11 +186,32 @@ async fn run_reconnect_loop(
     log_destination: Option<&LogDestination>,
 ) -> Result<()> {
     loop {
-        let mut event_task = spawn_event_consumer(events, output, log_destination.cloned());
+        let mode = setup_subscriptions(&client, config, output).await;
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let mut event_task = spawn_event_consumer(events, output, log_destination.cloned(), job_tx);
+        let mut conn = ConnectionJobs {
+            mode,
+            jobs: Jobs::new(ResultLabel::WhenLate),
+            results: job_rx,
+        };
 
-        let result = run_command_loop(&client, ctx, &mut event_task).await;
+        let result = run_command_loop(&client, ctx, &mut event_task, &mut conn).await;
 
         event_task.abort();
+        while let Ok(event) = conn
+            .results
+            .try_recv()
+        {
+            conn.jobs
+                .complete(
+                    &event,
+                    ctx.parts
+                        .processor,
+                    output,
+                );
+        }
+        conn.jobs
+            .strand(output, stranded_reason(&result));
 
         let dropped = client.dropped_event_count();
         if dropped > 0 {
@@ -199,7 +237,6 @@ async fn run_reconnect_loop(
                 info!("Reconnected successfully");
                 client = new_client;
                 events = new_events;
-                setup_subscriptions(&client, config).await;
             }
         }
     }
@@ -228,9 +265,41 @@ async fn shutdown_readline(
     }
 }
 
+/// How typed lines reach the switch on one connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandMode {
+    Jobs,
+    Api,
+}
+
+/// Job mode needs the results; without BACKGROUND_JOB they would never arrive.
+async fn choose_command_mode(client: &EslClient, output: &Output) -> CommandMode {
+    match client
+        .subscribe_events(EventFormat::Plain, &[EslEventType::BackgroundJob])
+        .await
+    {
+        Ok(()) => CommandMode::Jobs,
+        Err(e) => {
+            output.print_labeled(
+                "Warning",
+                &format!(
+                    "subscribing to BACKGROUND_JOB failed ({}); commands run as api, \
+                     and one slower than -t times out",
+                    e.display_chain()
+                ),
+            );
+            CommandMode::Api
+        }
+    }
+}
+
 /// Idle-liveness is armed only when the HEARTBEAT subscription is permitted:
 /// without those events the timer would trip on a healthy idle socket.
-async fn setup_subscriptions(client: &EslClient, config: &AppConfig) {
+async fn setup_subscriptions(
+    client: &EslClient,
+    config: &AppConfig,
+    output: &Output,
+) -> CommandMode {
     let subscription = if config.events {
         subscribe_to_events(client).await
     } else {
@@ -251,6 +320,7 @@ async fn setup_subscriptions(client: &EslClient, config: &AppConfig) {
             warn!("Failed to enable logging: {:#}", e);
         }
     }
+    choose_command_mode(client, output).await
 }
 
 /// Spawn a task that consumes events and displays log/channel messages
@@ -258,6 +328,7 @@ fn spawn_event_consumer(
     mut events: EslEventStream,
     output: &Output,
     log_destination: Option<LogDestination>,
+    job_results: mpsc::UnboundedSender<EslEvent>,
 ) -> JoinHandle<()> {
     let output = output.clone();
     tokio::spawn(async move {
@@ -266,6 +337,14 @@ fn spawn_event_consumer(
             .await
         {
             match result {
+                Ok(event) if event.event_type() == Some(EslEventType::BackgroundJob) => {
+                    if job_results
+                        .send(event)
+                        .is_err()
+                    {
+                        debug!("command loop gone, BACKGROUND_JOB dropped");
+                    }
+                }
                 Ok(event) => {
                     if let Some(raw) = event.raw_body() {
                         info!(
@@ -298,6 +377,22 @@ struct SessionParts<'a> {
     output: &'a Output,
     macros: &'a HashMap<String, String>,
     channel_provider: &'a ChannelProvider,
+    /// How long a job runs before the operator is told it is late.
+    command_timeout: Duration,
+}
+
+/// What one connection submitted and how its results reach the loop.
+struct ConnectionJobs {
+    mode: CommandMode,
+    jobs: Jobs,
+    results: mpsc::UnboundedReceiver<EslEvent>,
+}
+
+fn stranded_reason(end: &SessionEnd) -> &'static str {
+    match end {
+        SessionEnd::Quit => "still running at exit, result not shown",
+        SessionEnd::Disconnected(_) => "connection lost, outcome unknown",
+    }
 }
 
 struct CommandLoopCtx<'a> {
@@ -312,9 +407,22 @@ async fn run_command_loop(
     client: &EslClient,
     ctx: &mut CommandLoopCtx<'_>,
     event_task: &mut JoinHandle<()>,
+    conn: &mut ConnectionJobs,
 ) -> SessionEnd {
     loop {
+        let overdue = conn
+            .jobs
+            .next_overdue(
+                ctx.parts
+                    .command_timeout,
+            );
         tokio::select! {
+            Some(event) = conn.results.recv() => {
+                conn.jobs.complete(&event, ctx.parts.processor, ctx.parts.output);
+            }
+            _ = sleep_until(overdue.unwrap_or_else(Instant::now)), if overdue.is_some() => {
+                conn.jobs.warn_overdue(Instant::now(), ctx.parts.command_timeout, ctx.parts.output);
+            }
             result = &mut *event_task => {
                 match result {
                     Err(ref e) if e.is_panic() => error!("Event consumer task panicked: {}", e),
@@ -324,7 +432,7 @@ async fn run_command_loop(
                 return SessionEnd::Disconnected(classify_event_task_exit(client.status()));
             }
             Some(command) = ctx.cmd_rx.recv() => {
-                if let Some(end) = handle_command_line(&ctx.parts, client, command).await {
+                if let Some(end) = handle_command_line(&ctx.parts, client, conn, command).await {
                     return end;
                 }
             }
@@ -356,9 +464,23 @@ fn classify_event_task_exit(status: ConnectionStatus) -> DisconnectCause {
 async fn handle_command_line(
     parts: &SessionParts<'_>,
     client: &EslClient,
+    conn: &mut ConnectionJobs,
     command: String,
 ) -> Option<SessionEnd> {
     match command.parse::<ClientCommand>() {
+        Ok(ClientCommand::Jobs) => {
+            let rows = conn
+                .jobs
+                .list(Instant::now());
+            parts
+                .output
+                .print(if rows.is_empty() {
+                    "no pending jobs".to_string()
+                } else {
+                    rows.join("\n")
+                });
+            None
+        }
         Ok(ClientCommand::Help) => {
             parts
                 .processor
@@ -395,15 +517,44 @@ async fn handle_command_line(
         Err(ParseError::NotClientCommand) => {
             let effective = parse_function_key(&command, parts.macros).unwrap_or(command);
             // A refusal is already printed; the session carries on either way.
-            if let Err(e) = parts
-                .processor
-                .execute_command(client, &effective)
-                .await
-            {
+            if let Err(e) = send_line(parts, client, conn, &effective).await {
                 return report_or_disconnect(parts.processor, e);
             }
             None
         }
+    }
+}
+
+/// A line for the switch, as a job or, on an api connection, as api.
+async fn send_line(
+    parts: &SessionParts<'_>,
+    client: &EslClient,
+    conn: &mut ConnectionJobs,
+    line: &str,
+) -> Result<Answer> {
+    if conn.mode == CommandMode::Api {
+        return parts
+            .processor
+            .execute_command(client, line)
+            .await;
+    }
+    if let Some(answer) = parts
+        .processor
+        .execute_special(client, line)
+        .await
+    {
+        return answer;
+    }
+    conn.jobs
+        .submit(client, parts.processor, strip_bgapi(line))
+        .await
+}
+
+/// `bgapi X` typed in job mode is X: the line already runs in the background.
+fn strip_bgapi(line: &str) -> &str {
+    match line.split_once(char::is_whitespace) {
+        Some((head, rest)) if head.eq_ignore_ascii_case("bgapi") => rest.trim_start(),
+        _ => line,
     }
 }
 
@@ -448,6 +599,14 @@ mod tests {
         let cause = classify_event_task_exit(ConnectionStatus::Connected);
         assert!(matches!(cause, DisconnectCause::Unknown));
         assert_eq!(cause.to_string(), "reason unknown");
+    }
+
+    #[test]
+    fn bgapi_typed_in_job_mode_is_submitted_once() {
+        assert_eq!(strip_bgapi("bgapi originate x &park"), "originate x &park");
+        assert_eq!(strip_bgapi("BGAPI  status"), "status");
+        assert_eq!(strip_bgapi("bgapifoo status"), "bgapifoo status");
+        assert_eq!(strip_bgapi("status"), "status");
     }
 
     #[test]

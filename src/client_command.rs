@@ -11,6 +11,8 @@ pub enum ClientCommand {
     Clear,
     History,
     Quit,
+    /// `/jobs`: the jobs still waiting for their result.
+    Jobs,
     /// `/log <level>`, or bare `/log` for the level list.
     Log(Option<LogSetting>),
 }
@@ -48,6 +50,7 @@ impl FromStr for ClientCommand {
             "/clear" => Ok(ClientCommand::Clear),
             "/history" => Ok(ClientCommand::History),
             "/quit" | "/exit" | "/bye" => Ok(ClientCommand::Quit),
+            "/jobs" => Ok(ClientCommand::Jobs),
             "/log" | "log" => match parts.next() {
                 None => Ok(ClientCommand::Log(None)),
                 Some(level) => level
@@ -70,6 +73,7 @@ mod tests {
         assert_eq!("help".parse(), Ok(ClientCommand::Help));
         assert_eq!("/clear".parse(), Ok(ClientCommand::Clear));
         assert_eq!("/history".parse(), Ok(ClientCommand::History));
+        assert_eq!("/jobs".parse(), Ok(ClientCommand::Jobs));
         for quit in ["/quit", "/exit", "/bye"] {
             assert_eq!(quit.parse(), Ok(ClientCommand::Quit));
         }

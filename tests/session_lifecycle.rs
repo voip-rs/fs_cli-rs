@@ -5,11 +5,12 @@
 
 use freeswitch_esl_tokio::mock::{MockBackgroundJob, MockConnection, MockEslServer};
 use freeswitch_esl_tokio::LogLevel;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -193,6 +194,8 @@ async fn finish(run: JoinHandle<Output>) -> Output {
 struct Pty {
     master: OwnedFd,
     slave: OwnedFd,
+    /// Everything the child wrote to the terminal.
+    screen: Arc<Mutex<Vec<u8>>>,
 }
 
 fn open_pty() -> Pty {
@@ -212,23 +215,29 @@ fn open_pty() -> Pty {
         Pty {
             master: OwnedFd::from_raw_fd(master),
             slave: OwnedFd::from_raw_fd(slave),
+            screen: Arc::default(),
         }
     }
 }
 
-/// Drain the master end, so a chatty child never blocks on a full pty buffer.
+/// Drain the master end into the screen buffer, so a chatty child never
+/// blocks on a full pty buffer.
 fn drain_pty(pty: &Pty) {
     let mut master = std::fs::File::from(
         pty.master
             .try_clone()
             .expect("clone pty master"),
     );
+    let screen = Arc::clone(&pty.screen);
     std::thread::spawn(move || {
         let mut sink = [0u8; 4096];
         loop {
             match master.read(&mut sink) {
                 Ok(0) => return,
-                Ok(_) => {}
+                Ok(n) => screen
+                    .lock()
+                    .expect("screen lock")
+                    .extend_from_slice(&sink[..n]),
                 // EIO is how a pty reports that the last slave fd is gone.
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => return,
                 Err(e) => {
@@ -275,11 +284,11 @@ fn wait_with_stderr(mut child: Child) -> (std::process::ExitStatus, String) {
     (status, stderr)
 }
 
-/// The interactive startup is two commands: the event subscription and the
-/// log level.
+/// The interactive startup is three commands: the event subscription, the
+/// log level, and BACKGROUND_JOB on a line of its own.
 async fn answer_startup(conn: &mut MockConnection) -> Vec<String> {
     let mut seen = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         let command = next(conn)
             .await
             .expect("read startup command");
@@ -867,4 +876,193 @@ async fn a_refused_job_counts_and_names_the_job() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Type `line` and Enter into the child's terminal.
+fn type_line(pty: &Pty, line: &str) {
+    let mut master = std::fs::File::from(
+        pty.master
+            .try_clone()
+            .expect("clone pty master"),
+    );
+    for key in format!("{}\r", line).bytes() {
+        master
+            .write_all(&[key])
+            .expect("type into pty");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn screen_now(pty: &Pty) -> String {
+    String::from_utf8_lossy(
+        &pty.screen
+            .lock()
+            .expect("screen lock"),
+    )
+    .into_owned()
+}
+
+/// The screen once it shows `needle`, or as it stands at the wait limit.
+async fn screen_showing(pty: &Pty, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + WAIT_LIMIT;
+    loop {
+        let screen = screen_now(pty);
+        if screen.contains(needle) || tokio::time::Instant::now() >= deadline {
+            return screen;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn kill(mut child: Child) {
+    child
+        .kill()
+        .expect("kill fs_cli");
+    child
+        .wait()
+        .expect("reap fs_cli");
+}
+
+/// An interactive session on a pty, past its startup, with `-t 300`.
+async fn interactive(name: &str, extra: &[&str]) -> (MockEslServer, Pty, Child, MockConnection) {
+    let server = switch().await;
+    let dir = scratch_dir(name);
+    let pty = open_pty();
+    let mut command = cli(&dir, server.addr());
+    command
+        .args(["-t", "300"])
+        .args(extra);
+    let child = spawn_interactive(command, &pty);
+    let conn = accept(&server).await;
+    (server, pty, child, conn)
+}
+
+#[tokio::test]
+async fn a_slow_command_warns_and_still_prints_its_result() {
+    let (_server, pty, child, mut conn) = interactive("slow-job", &[]).await;
+    let startup = answer_startup(&mut conn).await;
+    assert_eq!(startup[2], "event plain BACKGROUND_JOB");
+
+    type_line(&pty, "slow");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi slow");
+    conn.reply_bgapi("job-slow")
+        .await
+        .expect("ack slow");
+
+    let warned = "job job-slow (slow) is taking longer than expected (300 ms)";
+    let screen = screen_showing(&pty, warned).await;
+    assert!(screen.contains(warned), "no late warning: {:?}", screen);
+
+    type_line(&pty, "/jobs");
+    let screen = screen_showing(&pty, "running  slow").await;
+    assert!(
+        screen.contains("job-slow") && screen.contains("running  slow"),
+        "/jobs must list the slow job: {:?}",
+        screen
+    );
+
+    type_line(&pty, "status");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi status");
+    conn.reply_bgapi("job-status")
+        .await
+        .expect("ack status");
+    conn.send_background_job(
+        &background_job("job-status", "status"),
+        "+OK fresh status\n",
+    )
+    .await
+    .expect("status result");
+    let screen = screen_showing(&pty, "+OK fresh status").await;
+    assert!(
+        screen.contains("+OK fresh status") && !screen.contains("[job-status"),
+        "a result within -t prints bare, as an api reply does: {:?}",
+        screen
+    );
+
+    conn.send_background_job(&background_job("job-slow", "slow"), "+OK slow done\n")
+        .await
+        .expect("slow result");
+    let late = "[job-slow slow] +OK slow done";
+    let screen = screen_showing(&pty, late).await;
+    assert!(
+        screen.contains(late),
+        "the late result must print, labelled: {:?}",
+        screen
+    );
+
+    type_line(&pty, "/jobs");
+    let screen = screen_showing(&pty, "no pending jobs").await;
+    assert!(screen.contains("no pending jobs"), "{:?}", screen);
+    kill(child);
+}
+
+#[tokio::test]
+async fn a_denied_background_job_subscription_falls_back_to_api() {
+    let (_server, pty, child, mut conn) = interactive("bgjob-denied", &[]).await;
+    for _ in 0..2 {
+        let command = next(&mut conn)
+            .await
+            .expect("read startup command");
+        answer(&mut conn, &command, None)
+            .await
+            .expect("answer startup command");
+    }
+    assert_eq!(
+        next(&mut conn)
+            .await
+            .expect("read subscription"),
+        "event plain BACKGROUND_JOB"
+    );
+    conn.reply_err("permission denied")
+        .await
+        .expect("deny BACKGROUND_JOB");
+
+    let screen = screen_showing(&pty, "commands run as api").await;
+    assert!(
+        screen.contains("subscribing to BACKGROUND_JOB failed"),
+        "the fallback must be told: {:?}",
+        screen
+    );
+
+    type_line(&pty, "slow");
+    assert_eq!(expect_next(&mut conn, "api").await, "api slow");
+    // The old behaviour, kept on an api connection: no reply within -t is a
+    // timeout, and the reply that does come is never shown.
+    let screen = screen_showing(&pty, "timed out").await;
+    assert!(screen.contains("timed out"), "{:?}", screen);
+    conn.reply_api("+OK slow done\n")
+        .await
+        .expect("late api reply");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!screen_now(&pty).contains("slow done"));
+    kill(child);
+}
+
+#[tokio::test]
+async fn a_lost_connection_reports_the_jobs_it_strands() {
+    let (server, pty, child, mut conn) = interactive("stranded", &["--reconnect", "true"]).await;
+    answer_startup(&mut conn).await;
+
+    type_line(&pty, "slow");
+    expect_next(&mut conn, "bgapi slow").await;
+    conn.reply_bgapi("job-slow")
+        .await
+        .expect("ack slow");
+    conn.drop_connection()
+        .await;
+
+    let stranded = "job job-slow (slow): connection lost, outcome unknown";
+    let screen = screen_showing(&pty, stranded).await;
+    assert!(screen.contains(stranded), "{:?}", screen);
+
+    let mut conn = accept(&server).await;
+    answer_startup(&mut conn).await;
+    type_line(&pty, "/jobs");
+    let screen = screen_showing(&pty, "no pending jobs").await;
+    assert!(
+        screen.contains("no pending jobs"),
+        "a stranded job must not linger on the new connection: {:?}",
+        screen
+    );
+    kill(child);
 }
