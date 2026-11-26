@@ -1,0 +1,10 @@
+#!/bin/sh
+# Undoes preinst's diversion, moving the other package's fs_cli back in place.
+set -e
+
+case "$1" in
+remove|abort-install|disappear)
+	dpkg-divert --package fs-cli --remove --rename \
+		--divert /usr/bin/fs_cli.old /usr/bin/fs_cli
+	;;
+esac

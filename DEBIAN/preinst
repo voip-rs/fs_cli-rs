@@ -1,0 +1,12 @@
+#!/bin/sh
+# Another package may install /usr/bin/fs_cli, such as the C client: its copy is
+# diverted to fs_cli.old so both install. Re-adding on upgrade is a no-op where the
+# diversion exists and restores it where it was removed.
+set -e
+
+case "$1" in
+install|upgrade)
+	dpkg-divert --package fs-cli --add --rename \
+		--divert /usr/bin/fs_cli.old /usr/bin/fs_cli
+	;;
+esac

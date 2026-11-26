@@ -29,6 +29,7 @@ define build-deb
 	install -D -m 755 -T "$<" "$(PKG)/usr/bin/$(BINARY)"
 	install -D -m 644 -T fs_cli.yaml "$(PKG)/usr/share/doc/$(NAME)/examples/fs_cli.yaml"
 	install -D -m 644 -T DEBIAN/control "$(PKG)/DEBIAN/control"
+	install -m 755 DEBIAN/preinst DEBIAN/postrm "$(PKG)/DEBIAN/"
 	sed -i -e "s/^Version:.*/Version: $(DEB_VERSION)/" \
 		-e "s/^Architecture:.*/Architecture: $(1)/" \
 		-e "/^Depends:/d" \
@@ -38,10 +39,10 @@ define build-deb
 	rm -rf "$(PKG)"
 endef
 
-$(DEB_AMD64): dist/$(BINARY).amd64 DEBIAN/control
+$(DEB_AMD64): dist/$(BINARY).amd64 DEBIAN/control DEBIAN/preinst DEBIAN/postrm
 	$(call build-deb,amd64)
 
-$(DEB_ARM64): dist/$(BINARY).arm64 DEBIAN/control
+$(DEB_ARM64): dist/$(BINARY).arm64 DEBIAN/control DEBIAN/preinst DEBIAN/postrm
 	$(call build-deb,arm64)
 
 # One container build cross-compiles all three, so they share a single rule
