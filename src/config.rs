@@ -1,6 +1,7 @@
 //! Configuration management for fs_cli-rs
 
 use crate::esl_debug::EslDebugLevel;
+use crate::jobs::CommandOrder;
 use crate::log_level::LogSetting;
 use crate::originate_check::OriginateCheck;
 use crate::printer::ColorMode;
@@ -71,6 +72,9 @@ pub struct ProfileConfig {
     /// What to do about an originate the switch may read differently
     pub originate_check: OriginateCheck,
 
+    /// Interactive: whether a typed line waits for the jobs before it
+    pub command_order: CommandOrder,
+
     /// Batch: stop and exit non-zero on a refused command
     pub fail_on_error: bool,
 }
@@ -95,6 +99,7 @@ impl Default for ProfileConfig {
             macros: crate::readline::get_default_fnkeys(),
             max_auto_complete_uuid: 32,
             originate_check: OriginateCheck::Warn,
+            command_order: CommandOrder::Concurrent,
             fail_on_error: false,
         }
     }
@@ -122,6 +127,7 @@ struct ProfileOverrides {
     macros: Option<HashMap<String, String>>,
     max_auto_complete_uuid: Option<u32>,
     originate_check: Option<OriginateCheck>,
+    command_order: Option<CommandOrder>,
     fail_on_error: Option<bool>,
 }
 
@@ -177,6 +183,9 @@ impl<'de> Deserialize<'de> for ProfileConfig {
             originate_check: set
                 .originate_check
                 .unwrap_or(base.originate_check),
+            command_order: set
+                .command_order
+                .unwrap_or(base.command_order),
             fail_on_error: set
                 .fail_on_error
                 .unwrap_or(base.fail_on_error),
@@ -208,6 +217,7 @@ impl ProfileConfig {
             job_timeout: None,
             max_auto_complete_uuid: self.max_auto_complete_uuid,
             originate_check: self.originate_check,
+            command_order: self.command_order,
             fail_on_error: self.fail_on_error,
         }
     }
@@ -245,6 +255,7 @@ pub struct AppConfig {
     pub job_timeout: Option<u64>,
     pub max_auto_complete_uuid: u32,
     pub originate_check: OriginateCheck,
+    pub command_order: CommandOrder,
     pub fail_on_error: bool,
 }
 

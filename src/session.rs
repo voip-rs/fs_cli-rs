@@ -8,7 +8,9 @@
 //! discards the late reply to keep replies paired with commands. A bgapi is
 //! acknowledged at once and answers with a BACKGROUND_JOB event, so a slow
 //! command becomes a warning and its result still prints when it arrives.
-//! Jobs run in parallel switch threads, so their effects can land in any order.
+//! Jobs run in parallel switch threads, so their effects can land in any order;
+//! `command_order: serial` holds each typed line until every job before it has
+//! answered, which restores the order api gave.
 //!
 //! BACKGROUND_JOB is subscribed with an `event` line of its own: the switch
 //! refuses a whole line when one event in it is denied, and HEARTBEAT, which
@@ -26,7 +28,7 @@ use crate::connection::{
     subscribe_heartbeat, subscribe_to_events,
 };
 use crate::console_complete::get_console_complete;
-use crate::jobs::{Jobs, ResultLabel};
+use crate::jobs::{CommandOrder, Jobs, ResultLabel};
 use crate::log_display::{display_log_event, format_channel_event, is_log_event, LogDestination};
 use crate::printer::{Output, Printer};
 use crate::readline::{build_macros, parse_function_key, run_readline_loop, ReadlineChannels};
@@ -40,7 +42,7 @@ use freeswitch_esl_tokio::{
     ConnectionStatus, DisconnectReason, EslClient, EslEvent, EslEventStream, EslEventType,
     EventFormat,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -193,6 +195,8 @@ async fn run_reconnect_loop(
             mode,
             jobs: Jobs::new(ResultLabel::WhenLate),
             results: job_rx,
+            order: config.command_order,
+            queued: VecDeque::new(),
         };
 
         let result = run_command_loop(&client, ctx, &mut event_task, &mut conn).await;
@@ -212,6 +216,7 @@ async fn run_reconnect_loop(
         }
         conn.jobs
             .strand(output, stranded_reason(&result));
+        conn.report_unsent(output);
 
         let dropped = client.dropped_event_count();
         if dropped > 0 {
@@ -386,6 +391,21 @@ struct ConnectionJobs {
     mode: CommandMode,
     jobs: Jobs,
     results: mpsc::UnboundedReceiver<EslEvent>,
+    order: CommandOrder,
+    /// Serial order: lines typed while a job is pending, oldest first.
+    queued: VecDeque<String>,
+}
+
+impl ConnectionJobs {
+    /// Name every line that never reached the switch, and drop it.
+    fn report_unsent(&mut self, output: &Output) {
+        for line in self
+            .queued
+            .drain(..)
+        {
+            output.print_labeled("Warning", &format!("not sent: {}", line));
+        }
+    }
 }
 
 fn stranded_reason(end: &SessionEnd) -> &'static str {
@@ -419,6 +439,11 @@ async fn run_command_loop(
         tokio::select! {
             Some(event) = conn.results.recv() => {
                 conn.jobs.complete(&event, ctx.parts.processor, ctx.parts.output);
+                if let Err(e) = submit_queued(&ctx.parts, client, conn).await {
+                    if let Some(end) = report_or_disconnect(ctx.parts.processor, e) {
+                        return end;
+                    }
+                }
             }
             _ = sleep_until(overdue.unwrap_or_else(Instant::now)), if overdue.is_some() => {
                 conn.jobs.warn_overdue(Instant::now(), ctx.parts.command_timeout, ctx.parts.output);
@@ -469,9 +494,14 @@ async fn handle_command_line(
 ) -> Option<SessionEnd> {
     match command.parse::<ClientCommand>() {
         Ok(ClientCommand::Jobs) => {
-            let rows = conn
+            let mut rows = conn
                 .jobs
                 .list(Instant::now());
+            rows.extend(
+                conn.queued
+                    .iter()
+                    .map(|line| format!("queued  {}", line)),
+            );
             parts
                 .output
                 .print(if rows.is_empty() {
@@ -545,9 +575,48 @@ async fn send_line(
     {
         return answer;
     }
+    let line = strip_bgapi(line);
+    if conn.order == CommandOrder::Serial
+        && (conn
+            .jobs
+            .pending_count()
+            > 0
+            || !conn
+                .queued
+                .is_empty())
+    {
+        conn.queued
+            .push_back(line.to_string());
+        return Ok(Answer::Accepted);
+    }
     conn.jobs
-        .submit(client, parts.processor, strip_bgapi(line))
+        .submit(client, parts.processor, line)
         .await
+}
+
+/// Serial order: submit queued lines once nothing is pending. A refused
+/// submission leaves nothing pending, so the next line follows at once.
+async fn submit_queued(
+    parts: &SessionParts<'_>,
+    client: &EslClient,
+    conn: &mut ConnectionJobs,
+) -> Result<()> {
+    while conn
+        .jobs
+        .pending_count()
+        == 0
+    {
+        let Some(line) = conn
+            .queued
+            .pop_front()
+        else {
+            return Ok(());
+        };
+        conn.jobs
+            .submit(client, parts.processor, &line)
+            .await?;
+    }
+    Ok(())
 }
 
 /// `bgapi X` typed in job mode is X: the line already runs in the background.

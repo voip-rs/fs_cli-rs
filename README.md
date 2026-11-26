@@ -59,7 +59,7 @@ configured profiles.
 
 A line typed at the prompt goes to the switch as `bgapi`, so a slow command never holds the connection: the prompt stays usable and other commands go out at once. A result that arrives within `-t` (default 2000 ms) prints as an api reply would. Past it, fs_cli warns that the job is taking longer than expected and keeps waiting; the result prints when it comes, labelled `[Job-UUID command]`. `/jobs` lists the jobs still waiting.
 
-Jobs run in parallel on the switch, so two commands typed back to back can take effect in either order. A job in flight when the connection drops is reported as having an unknown outcome.
+Jobs run in parallel on the switch, so two commands typed back to back can take effect in either order. `--command-order serial` (profile key `command_order`) keeps the order typed: a line waits in fs_cli until every job before it has answered, and `/jobs` lists it as queued. A job in flight when the connection drops is reported as having an unknown outcome, and a line still queued as not sent.
 
 An ESL user denied the BACKGROUND_JOB event gets a warning and plain `api`, where a command slower than `-t` times out and its reply is not shown.
 

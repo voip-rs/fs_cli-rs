@@ -13,6 +13,7 @@ use crate::commands::{Answer, CommandProcessor};
 use crate::printer::Output;
 use anyhow::{Context, Result};
 use freeswitch_esl_tokio::{BgJobTracker, EslClient, EslEvent};
+use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, Instant};
 use tracing::debug;
 
@@ -222,4 +223,16 @@ impl Jobs {
         pending.sort();
         pending
     }
+}
+
+/// Whether a typed line waits for the jobs before it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandOrder {
+    /// Each line is submitted at once; jobs run side by side on the switch.
+    #[default]
+    Concurrent,
+    /// A line is submitted only once every earlier job has answered, so
+    /// commands take effect in the order typed, as with api.
+    Serial,
 }

@@ -2,6 +2,7 @@
 
 use crate::config::{AppConfig, BatchCommand, FsCliConfig, ProfileConfig};
 use crate::esl_debug::EslDebugLevel;
+use crate::jobs::CommandOrder;
 use crate::log_level::LogSetting;
 use crate::originate_check::OriginateCheck;
 use crate::printer::ColorMode;
@@ -44,6 +45,10 @@ pub struct Args {
     /// Report what the switch will install for an originate (off, warn, fix)
     #[arg(long, ignore_case = true)]
     pub originate_check: Option<OriginateCheck>,
+
+    /// Interactive: submit each line at once, or only after earlier jobs answered
+    #[arg(long, ignore_case = true)]
+    pub command_order: Option<CommandOrder>,
 
     /// With -x/-X: stop at a refused command and exit 3
     #[arg(long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
@@ -187,6 +192,9 @@ impl Args {
         if let Some(originate_check) = self.originate_check {
             config.originate_check = originate_check;
         }
+        if let Some(command_order) = self.command_order {
+            config.command_order = command_order;
+        }
         if let Some(fail_on_error) = self.fail_on_error {
             config.fail_on_error = fail_on_error;
         }
@@ -267,6 +275,7 @@ mod tests {
     use super::Args;
     use crate::config::{AppConfig, BatchCommand};
     use crate::esl_debug::EslDebugLevel;
+    use crate::jobs::CommandOrder;
     use crate::log_level::LogSetting;
     use crate::originate_check::OriginateCheck;
     use crate::printer::ColorMode;
@@ -283,6 +292,14 @@ mod tests {
             assert_eq!(args.color, Some(ColorMode::Never));
         }
         assert!(Args::try_parse_from(["fs_cli", "--color", "rainbow"]).is_err());
+    }
+
+    #[test]
+    fn command_order_takes_either_word() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["fs_cli", "--command-order", "Serial"]).unwrap();
+        assert_eq!(args.command_order, Some(CommandOrder::Serial));
+        assert!(Args::try_parse_from(["fs_cli", "--command-order", "random"]).is_err());
     }
 
     /// `-t` and `-T` are stock fs_cli's split: the reply wait and the connect.
@@ -325,6 +342,7 @@ mod tests {
             debug: None,
             color: None,
             originate_check: None,
+            command_order: None,
             fail_on_error: None,
             execute: Vec::new(),
             bg_execute: Vec::new(),
@@ -365,6 +383,7 @@ mod tests {
             execute: Vec::new(),
             max_auto_complete_uuid: 32,
             originate_check: OriginateCheck::Warn,
+            command_order: CommandOrder::Concurrent,
             fail_on_error: false,
         }
     }

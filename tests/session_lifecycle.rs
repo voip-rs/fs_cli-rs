@@ -1066,3 +1066,33 @@ async fn a_lost_connection_reports_the_jobs_it_strands() {
     );
     kill(child);
 }
+
+#[tokio::test]
+async fn serial_order_holds_a_line_until_the_job_before_it_answers() {
+    let (_server, pty, child, mut conn) =
+        interactive("serial", &["--command-order", "serial"]).await;
+    answer_startup(&mut conn).await;
+
+    type_line(&pty, "slow");
+    expect_next(&mut conn, "bgapi slow").await;
+    conn.reply_bgapi("job-slow")
+        .await
+        .expect("ack slow");
+
+    type_line(&pty, "status");
+    type_line(&pty, "/jobs");
+    let screen = screen_showing(&pty, "queued  status").await;
+    assert!(screen.contains("queued  status"), "{:?}", screen);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), next(&mut conn))
+            .await
+            .is_err(),
+        "a serial line must not go out while the job before it is pending"
+    );
+
+    conn.send_background_job(&background_job("job-slow", "slow"), "+OK slow done\n")
+        .await
+        .expect("slow result");
+    assert_eq!(expect_next(&mut conn, "bgapi").await, "bgapi status");
+    kill(child);
+}

@@ -14,6 +14,7 @@ fs_cli:
     log_level: debug
     quiet: false
     originate_check: warn
+    command_order: concurrent
     fail_on_error: false
     macros:
       f1: help
