@@ -21,10 +21,17 @@ workflow="${2:-build.yml}"
 # which no run matches; the release tag is always annotated.
 sha="$(git rev-parse "${ref}^{commit}")"
 
+# A tag on the commit just released shares its SHA with the branch run, which
+# already finished; without --branch the tag's own run is never waited for.
+branch_filter=()
+if git show-ref --verify --quiet "refs/tags/$ref"; then
+	branch_filter=(--branch "$ref")
+fi
+
 run_id=""
 waited=0
 while [ -z "$run_id" ]; do
-	run_id="$(gh run list --workflow "$workflow" --commit "$sha" --limit 1 \
+	run_id="$(gh run list --workflow "$workflow" --commit "$sha" "${branch_filter[@]}" --limit 1 \
 		--json databaseId --jq '.[0].databaseId // empty')"
 	[ -n "$run_id" ] && break
 	if [ "$waited" -ge "$POLL_TIMEOUT" ]; then
